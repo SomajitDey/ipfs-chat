@@ -1,0 +1,240 @@
+#!/usr/bin/env bash
+# Details: See info and usage functions below
+
+export version="0.0.0 (alpha)"
+
+info(){
+  # Brief: Info about ipfs-chat
+  echo -n "
+                        Welcome to ipfs-chat
+                        ====================
+Repo (For details & Bug-report): https://github.com/SomajitDey/ipfs-chat
+License: GNU GPL v3-or-later (C) 2021 Somajit Dey
+Version: " >&2
+  echo "${version}"
+}; export -f info
+
+usage(){
+  # Brief: Show help and exit
+  echo "Usage: ipfs-chat [-n <nick>] [-r <room>] [-d <file-download-dir>] [-c <ipfs-repo-path>]"
+  echo "Generate random room: ipfs-chat -g"
+  exit 1
+} >&2; export -f usage
+
+hmac(){
+  # Usage: hmac <salt> <string>
+  sha1(){ sha1sum < <(echo -n "${1}") | cut -d ' ' -f 1;} # Usage: sha1 <string>
+  local key="$(sha1 "${1}")" data="$(sha1 "${2}")"
+  echo -n "${data}" | xxd -r -p | openssl dgst -sha1 -mac hmac -macopt hexkey:"${key}" | cut -d ' ' -f 2
+}; export -f hmac
+
+dep_check(){
+  # Brief: Check major dependencies
+  local ipfs_version quit
+  if ipfs_version=$(ipfs version --number 2>/dev/null); then
+    [[ "${ipfs_version}" > 0.9.0 ]] || \
+    { echo -e "Required: go-ipfs version > 0.9.0\nSuggestion: ipfs update install latest\n"; quit="yes";}
+  else
+    echo -e "Required: go-ipfs\nSource: https://docs.ipfs.io/install/command-line/#linux\n"
+    quit="yes"
+  fi
+  if ! command -v dialog &>/dev/null; then
+    echo -e "Required: dialog\nSource: Native package repository\n"
+    quit="yes"
+  fi
+  if ! command -v setsid &>/dev/null; then
+    echo -e "Required: setsid\nSource: Native package repository\n"
+    quit="yes"
+  fi
+  [[ -v quit ]] && exit 1
+} >&2; export -f dep_check
+
+parse_cmdline(){
+  local opt OPTIND=1
+  while getopts n:r:d:c:gh opt;do
+    case "${opt}" in
+      n) nick="${OPTARG}";;
+      r) room="${OPTARG}";;
+      d) dldir="${OPTARG}";;
+      c) local repo="${OPTARG}";;
+      g) echo -n "Random room: " >&2; dd if=/dev/urandom count=1 bs=6 2>/dev/null | base64; exit;;
+      h|*) usage;;
+    esac
+  done
+  export room="${room:="salon"}" nick="${nick:="${USER}"}" dldir="${dldir:="${HOME}/ipfs-chat-downloads"}"
+  export IPFS_PATH="${repo:-"${HOME}/.ipfs-chat"}"
+}; export -f parse_cmdline
+
+parse_cmdline "$@"
+
+info
+
+ipfs_config(){
+  # Brief: Configure IPFS node
+  # Note: Use random ports for everything so that multiple IPFS nodes can coexist on the same machine
+  echo -ne "Status: Configuring IPFS node...\r"
+  ipfs id &>/dev/null || \
+    { ipfs init --profile randomports >/dev/null && ipfs config profile apply lowpower >/dev/null;} || \
+    { echo "Error: Failed to create IPFS repo at ${IPFS_PATH}"; exit 1;}
+  ipfs config --json Swarm.EnableAutoRelay true
+  ipfs config Reprovider.Strategy pinned
+  ipfs config Routing.Type dhtclient
+
+  pscan(){
+    # Brief: Give an unused, random, local TCP port except the one passed as argument
+    command -v nc &>/dev/null || return 1 # TODO: For machines with no nc consider socat
+    local port except="${1}"
+    for port in $(seq 49152 65535 | tac);do
+      ((port!=except)) || continue
+      ! nc -z localhost "${port}" && echo "${port}" && return # TODO: For machines with no nc consider socat
+    done
+  } 2>/dev/null; export -f pscan
+  local API_port="$(pscan)"; ipfs config Addresses.API "/ip4/127.0.0.1/tcp/${API_port:=5001}"
+  local gateway_port="$(pscan "${API_port}")"; ipfs config Addresses.Gateway "/ip4/127.0.0.1/tcp/${gateway_port:=8080}"
+
+  until ipfs swarm peers;do
+    setsid --fork ipfs daemon --enable-pubsub-experiment --enable-namesys-pubsub
+    # setsid makes sure daemon runs in a separate session, such that `pkill -s 0` does not kill it.
+    sleep 0.1
+  done &>/dev/null
+  echo "Status: IPFS node is configured"
+  export selfID="$(ipfs config Identity.PeerID)" topic="$(hmac "ipfs-chat" "${room}")"
+} >&2; export -f ipfs_config
+
+ipfs_config
+
+config(){
+  # Brief: General config. Compute and export variables. Setup tmp dir and runtime filesystem.
+  if ls -d "${IPFS_PATH}/room#"* &>/dev/null; then
+    export nick="$(tail -n1 $(ls -d1 "${IPFS_PATH}/room#"* | head -n1)/pubkey.asc)"
+    echo "Note: Using ${nick} as nick" # Using separate nicks with same peer ID will cause conflicts with IPNS
+  fi
+
+  export enc_key="$(hmac "symmetric-encryption-key" "${room}")" tmpdir="${IPFS_PATH}/room#${topic}"
+  mkdir "${tmpdir}" 2>/dev/null || { echo "Error: Another instance running"; exit 1;}
+  tmpgen(){ mktemp "${tmpdir}/.XXXXX";}; export -f tmpgen
+
+  export chat="${tmpdir}/chat" peers="${tmpdir}/peers" input="${tmpdir}/input"
+  :>"${chat}"; echo "Discovering...">"${peers}"; :>"${input}" # Clear files: Redirected no-op
+
+  trap "trap '' TERM; pkill -s 0; rm -rf ${tmpdir}; ls -d ${IPFS_PATH}/room#* &>/dev/null || ipfs shutdown" exit # TODO: Replace pkill -s 0 with smthing better
+} >&2; export -f config
+
+config
+
+identity(){
+  # Brief: Generate key-pair. Nick & pubkey will be claimed using IPNS by peering_daemon.
+  export GNUPGHOME="${IPFS_PATH}/gpg" pubkey="${tmpdir}/pubkey.asc"
+  gnupg(){ flock "${GNUPGHOME}" gpg --batch -q "${@}";}; export -f gnupg # Thread-safe gpg in batch mode
+  if mkdir "${GNUPGHOME}"; then
+    gnupg --passphrase '' --pinentry-mode loopback --quick-gen-key "${selfID}" ed25519 default 0 || return 1
+    gnupg -a -o "${GNUPGHOME}/pubkey.asc" --export "${selfID}"
+  fi
+  cat "${GNUPGHOME}/pubkey.asc" <(echo "${nick}") > "${pubkey}"
+} &>/dev/null; export -f identity
+
+identity || { echo "Error: Failed to generate key-pair" >&2; exit 1;}
+
+peer_pubkey_nick(){
+  # Brief: Import pubkey of peer ID passed as argument and output its nick. Flag -n to force IPNS update (nocache).
+  # TODO: peer_pubkey=CID_peerID
+  local OPTIND=1 opt nocache
+  getopts n opt; [[ "${opt}" == "n" ]] && nocache="--nocache"
+  local peerID="${!OPTIND}"
+  [[ "${peerID}" == "${selfID}" ]] || ipfs swarm connect "/p2p/${peerID}" &>/dev/null & # Non-blocking
+  local ipfs_path="$(until ipfs name resolve ${nocache} "/ipns/${peerID}"; do ipfs swarm peers &>/dev/null || break; done)"
+  [[ -n "${ipfs_path}" ]] || return 1
+  local peer_pubkey="${tmpdir}/${ipfs_path##*/}"
+  if ! [[ -e "${peer_pubkey}" ]]; then
+    gnupg --yes --delete-keys "${peerID}"
+    flock "${peer_pubkey}" ipfs get -o "${peer_pubkey}" "${ipfs_path}" && \
+    gnupg --import "${peer_pubkey}" || rm -f "${peer_pubkey}"
+  fi &>/dev/null
+  tail -n1 "${peer_pubkey}"
+} 2>/dev/null ; export -f peer_pubkey_nick
+
+subscriber_daemon(){
+  # Brief: Listen to messages at pubsub, decrypt & verify signature, display if ok
+  local timestamp peerID readbuff sender buffer="$(tmpgen)"
+  while ipfs swarm peers &>/dev/null;do # Until IPFS daemon exits
+    read peerID readbuff || return # Failure: Handle unexpected EOF from pubsub; i.e. when IPFS daemon dies
+    (sender="$(peer_pubkey_nick "${peerID}")" || exit 1 # Note absence of -n flag in peer_pubkey_nick
+    echo -n "${readbuff}" | base64 -d | \
+      gnupg --passphrase "${enc_key}" --pinentry-mode loopback -d > "${buffer}" || exit 1
+    timestamp="$(head -n1 "${buffer}")"
+    timestamp="$(date -d @${timestamp} +"%a %H:%M:%S")"
+    flock "${chat}" cat <(echo "${timestamp} ${sender}(${peerID})") <(tail -n+2 "${buffer}" | fold -w 40) <(echo -e \\n) >> "${chat}")&
+  done < <(ipfs pubsub sub "${topic}")
+} &>"${tmpdir}/subscriber_daemon.log"; export -f subscriber_daemon
+
+subscriber_daemon &
+
+peering_daemon(){
+  # Brief: Discover & connect to chat-peers & announce self for others to discover - both at regular intervals
+  local peerID peerID_list="$(tmpgen)" buffer="$(tmpgen)"
+  local interval=10
+  while ipfs swarm peers &>/dev/null;do # Do as long as IPFS daemon is alive
+    local timestamp="${EPOCHSECONDS}"
+    local nonce="$(hmac "${room}" "$((timestamp/interval))" | ipfs add -Q --pin=false)" # Announce time based nonce
+    flock -n "${IPFS_PATH}" ipfs name publish --ipns-base=b58mh "/ipfs/$(ipfs add -Q --pin=false "${pubkey}")" & # Claim nick & pubkey using IPNS
+    timeout 5 ipfs dht findprovs "${nonce}" > "${peerID_list}" # Peer discovery. TODO: Need a slower one?
+    for peerID in $(sort -u <(ipfs pubsub peers "${topic}") "${peerID_list}"); do # Connecting to peers and importing their pubkeys
+      (local alias="$(peer_pubkey_nick -n "${peerID}")" && \
+      flock "${buffer}" echo "${alias}(${peerID})" >> "${buffer}")& # Non-blocking. Notice the nocache flag -n forcing IPNS update
+    done
+    sleep "$((interval-EPOCHSECONDS+timestamp))"
+    mv "${buffer}" "${peers}" # Atomic move
+  done  
+} &>"${tmpdir}/peering_daemon.log"; export -f peering_daemon
+
+echo "Status: Discovering peers..." >&2 ; peering_daemon &
+
+send(){
+  # Brief: Encrypt and sign user's msg & publish to pubsub
+  [[ -s "${input}" ]] || return # Skip empty input
+  local msg="$(tmpgen)" ; mv "${input}" "${msg}"
+  (local buffer="$(cat <(echo "${EPOCHSECONDS}") "${msg}" | \
+    gnupg --passphrase "${enc_key}" --pinentry-mode loopback -o- -s -c --cipher-algo AES128 | base64 -w0)"
+  ipfs pubsub pub "${topic}" "${selfID} ${buffer}"$'\n') &
+} &>/dev/null; export -f send
+
+ui(){
+  # Brief: UI event-loop. Window numbering: 1(Top Left) 2(Top Right) 3(Spanning Bottom)
+  while :;do
+    # Dimensions are computed just before calling `dialog` to accomodate for the latest terminal window size changes
+    local tty_height="$(tput lines)" tty_width="$(tput cols)"
+    local win3_height=7 win3_width="${tty_width}"
+    local win12_height="$((tty_height-win3_height-1))" # The -1 gap looks awesome as it demarcates better
+    local win2_width="$((tty_width/4))"
+    local win1_width="$((tty_width-win2_width))"
+    dialog --keep-tite \
+      --title "ipfs-chat-room: ${room}" --begin 0 0 --tailboxbg "${chat}" "${win12_height}" "${win1_width}" \
+      --and-widget \
+      --title "online-peers" --begin 0 "${win1_width}" --tailboxbg "${peers}" "${win12_height}" "${win2_width}" \
+      --and-widget --colors \
+      --no-shadow --title "Press Esc to exit" --begin "$((tty_height-win3_height))" 0 \
+      --ok-label "Send" --cancel-label "Clear" \
+      --extra-button --extra-label "Inspect chat" \
+      --help-button --help-label "Inspect peers" \
+      --inputbox '\Zb\Z1Type your message here or drag-n-drop file to share\Zn' 0 "${win3_width}" \
+      2> "${input}"
+      local exit_code=$?
+      case "${exit_code}" in
+        0) send ;; # Button: Send
+        1) continue ;; # Button: Clear
+        2) # Button: Inspect peers
+           dialog --keep-tite --no-shadow --exit-label "Back"\
+           --title "online-peers" --begin 0 0 --textbox "${peers}" "${tty_height}" "${tty_width}"
+           ;;
+        3) # Button: Inspect chat
+           dialog --keep-tite --no-shadow --exit-label "Back"\
+           --title "ipfs-chat-room: ${room}" --begin 0 0 --textbox "${chat}" "${tty_height}" "${tty_width}"
+           ;;
+        *) echo "Status: Exiting..." >&2 ; exit ;; # Esc
+      esac
+  done
+}; export -f ui
+
+ui
+
+exit
