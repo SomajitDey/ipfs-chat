@@ -77,8 +77,16 @@ ipfs_config(){
     { ipfs init --profile randomports >/dev/null && ipfs config profile apply lowpower >/dev/null;} || \
     { echo "Error: Failed to create IPFS repo at ${IPFS_PATH}"; exit 1;}
   ipfs config --json Swarm.EnableAutoRelay true
-  ipfs config Reprovider.Strategy pinned
+  ipfs config Pubsub.Router gossipsub
+  ipfs config Ipns.RepublishPeriod 2m0s
+  ipfs config Ipns.RecordLifetime 24h
+  ipfs config Reprovider.Interval 2m0s
+  ipfs config Reprovider.Strategy roots
   ipfs config Routing.Type dhtclient
+  ipfs config --json Swarm.ConnMgr.LowWater 20
+  ipfs config --json Swarm.ConnMgr.HighWater 21
+  ipfs config Swarm.ConnMgr.GracePeriod 2m0s
+  ipfs config --json Swarm.DisableBandwidthMetrics true
 
   pscan(){
     # Brief: Give an unused, random, local TCP port except the one passed as argument
@@ -123,7 +131,7 @@ config(){
 config
 
 identity(){
-  # Brief: Generate key-pair. Nick & pubkey will be claimed using IPNS by peering_daemon.
+  # Brief: Generate key-pair. Claim nick & pubkey using IPNS.
   export GNUPGHOME="${IPFS_PATH}/gpg" pubkey="${tmpdir}/pubkey.asc"
   gnupg(){ flock "${GNUPGHOME}" gpg --batch -q "${@}";}; export -f gnupg # Thread-safe gpg in batch mode
   if mkdir "${GNUPGHOME}"; then
@@ -131,6 +139,7 @@ identity(){
     gnupg -a -o "${GNUPGHOME}/pubkey.asc" --export "${selfID}"
   fi
   cat "${GNUPGHOME}/pubkey.asc" <(echo "${nick}") > "${pubkey}"
+  ipfs name publish --allow-offline --ipns-base=b58mh "/ipfs/$(ipfs add -Q "${pubkey}")" & # Claim nick & pubkey using IPNS
 } &>/dev/null; export -f identity
 
 identity || { echo "Error: Failed to generate key-pair" >&2; exit 1;}
@@ -172,11 +181,10 @@ subscriber_daemon &
 peering_daemon(){
   # Brief: Discover & connect to chat-peers & announce self for others to discover - both at regular intervals
   local peerID peerID_list="$(tmpgen)" buffer="$(tmpgen)"
-  local interval=10
+  local interval=120
   while ipfs swarm peers &>/dev/null;do # Do as long as IPFS daemon is alive
     local timestamp="${EPOCHSECONDS}"
     local nonce="$(hmac "${room}" "$((timestamp/interval))" | ipfs add -Q --pin=false)" # Announce time based nonce
-    flock -n "${IPFS_PATH}" ipfs name publish --ipns-base=b58mh "/ipfs/$(ipfs add -Q --pin=false "${pubkey}")" & # Claim nick & pubkey using IPNS
     timeout 5 ipfs dht findprovs "${nonce}" > "${peerID_list}" # Peer discovery. TODO: Need a slower one?
     for peerID in $(sort -u <(ipfs pubsub peers "${topic}") "${peerID_list}"); do # Connecting to peers and importing their pubkeys
       (local alias="$(peer_pubkey_nick -n "${peerID}")" && \
