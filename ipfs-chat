@@ -154,10 +154,20 @@ identity(){
 identity || { echo "Error: Failed to generate key-pair" >&2; exit 1;}
 
 cache_peer(){
-  # Brief: Cache peerID given as argument. The cache will be used by con_cull
+  # Brief: Cache peerID or multiaddress given as argument. The cache will be used by con_cull
   local peerID="${1}"
-  grep -q "${peerID}" "${sess_peers}" || echo "${peerID}" >> "${sess_peers}"
+  grep -q "${peerID}" "${sess_peers}" || flock "${sess_peers}" echo "${peerID}" >> "${sess_peers}"
 } &>/dev/null; export -f cache_peer
+
+connect_peer(){
+  # Brief: Connect to peer ID provided as argument
+  local peerID="${1}" multiaddress
+  [[ "${peerID}" != "${selfID}" ]] || return 1
+  ipfs swarm connect "/p2p/${peerID}" || return 1
+  for multiaddress in $(ipfs swarm peers | grep "${peerID}"); do
+    cache_peer "${multiaddress}"
+  done
+} &>/dev/null; export -f connect_peer
 
 peer_pubkey_nick(){
   # Brief: Import pubkey of peer ID passed as argument and output its nick. Flag -n to force IPNS update (nocache).
@@ -165,7 +175,7 @@ peer_pubkey_nick(){
   local OPTIND=1 opt nocache
   getopts n opt; [[ "${opt}" == "n" ]] && nocache="--nocache"
   local peerID="${!OPTIND}"
-  [[ "${peerID}" == "${selfID}" ]] || ipfs swarm connect "/p2p/${peerID}" &>/dev/null & # Non-blocking
+  connect_peer "${peerID}" & # Non-blocking
   local ipfs_path="$(until ipfs name resolve ${nocache} "/ipns/${peerID}"; do ipfs swarm peers &>/dev/null || break; done)"
   [[ -n "${ipfs_path}" ]] || return 1
   local peer_pubkey="${tmpdir}/${ipfs_path##*/}"
@@ -197,9 +207,11 @@ subscriber_daemon &
 con_cull(){
   # Brief: Cull all connections to peers except those in the file provided as argument or cache and the connection to relay (if any)
   local curr_self_address="$(ipfs id "${selfID}" -f="<addrs>\n")" peerID_list="${1:-"${sess_peers}"}"
+    echo ${peerID_list} >> "${IPFS_PATH}/check" ; date >> "${IPFS_PATH}/check"
   local multiaddress peerID
   for multiaddress in $(ipfs swarm peers); do
     peerID="${multiaddress##*/}"
+    grep "${peerID}" "${peerID_list}" >> "${IPFS_PATH}/check"
     grep -q "${peerID}" "${peerID_list}" || (echo "${curr_self_address}" | grep -q "${peerID}") || \
       ipfs swarm disconnect "/p2p/${peerID}" &>/dev/null
   done
@@ -235,7 +247,7 @@ pubsub_conn(){
   while ipfs swarm peers &>/dev/null;do
     read multiaddress
     peerID="${multiaddress##*/}"
-    cache_peer "${peerID}"
+    cache_peer "${multiaddress}"
     [[ "${peerID}" == "${selfID}" ]] || (ipfs swarm peers | grep -q "${peerID}") || ipfs swarm connect "${multiaddress}"
     # TODO: & (bg) or not?
   done < <(ipfs pubsub sub "${broadcast}")
