@@ -23,9 +23,11 @@ usage(){
 
 hmac(){
   # Usage: hmac <salt> <string>
+  # Output: base64
   sha1(){ sha1sum < <(echo -n "${1}") | cut -d ' ' -f 1;} # Usage: sha1 <string>
   local key="$(sha1 "${1}")" data="$(sha1 "${2}")"
-  echo -n "${data}" | xxd -r -p | openssl dgst -sha1 -mac hmac -macopt hexkey:"${key}" | cut -d ' ' -f 2
+  echo -n "${data}" | xxd -r -p | openssl dgst -sha1 -mac hmac -macopt hexkey:"${key}" | cut -d ' ' -f 2 | \
+    xxd -r -p | base64 -w0
 }; export -f hmac
 
 dep_check(){
@@ -74,18 +76,23 @@ ipfs_config(){
   # Note: Use random ports for everything so that multiple IPFS nodes can coexist on the same machine
   echo -ne "Status: Configuring IPFS node...\r"
   ipfs id &>/dev/null || \
-    { ipfs init --profile randomports >/dev/null && ipfs config profile apply lowpower >/dev/null;} || \
+    { ipfs init --profile lowpower >/dev/null && ipfs config profile apply randomports >/dev/null;} || \
     { echo "Error: Failed to create IPFS repo at ${IPFS_PATH}"; exit 1;}
-  ipfs config --json Swarm.EnableAutoRelay true
+
+  (ipfs pin ls --type all | cut -d' ' -f1 | xargs -n1 ipfs pin rm ; ipfs repo gc) &>/dev/null # Repo cleanup
+
+  ipfs config --json Swarm.EnableAutoRelay true # For NAT traversal
+  # Most configs below are for reducing bandwidth and CPU usage
   ipfs config Pubsub.Router gossipsub
   ipfs config Ipns.RepublishPeriod 2m0s
   ipfs config Ipns.RecordLifetime 24h
   ipfs config Reprovider.Interval 2m0s
   ipfs config Reprovider.Strategy roots
   ipfs config Routing.Type dhtclient
-  ipfs config --json Swarm.ConnMgr.LowWater 20
-  ipfs config --json Swarm.ConnMgr.HighWater 21
-  ipfs config Swarm.ConnMgr.GracePeriod 2m0s
+  ipfs config Swarm.ConnMgr.Type none
+#  ipfs config --json Swarm.ConnMgr.LowWater 20
+#  ipfs config --json Swarm.ConnMgr.HighWater 21
+#  ipfs config Swarm.ConnMgr.GracePeriod 2m0s
   ipfs config --json Swarm.DisableBandwidthMetrics true
 
   pscan(){
@@ -106,7 +113,9 @@ ipfs_config(){
     sleep 0.1
   done &>/dev/null
   echo "Status: IPFS node is configured"
-  export selfID="$(ipfs config Identity.PeerID)" topic="$(hmac "ipfs-chat" "${room}")"
+  
+  export selfID="$(ipfs config Identity.PeerID)"
+  export topic="$(hmac "ipfs-chat" "${room}")" broadcast="$(hmac "peer-addresses" "${room}")"
 } >&2; export -f ipfs_config
 
 ipfs_config
@@ -122,7 +131,7 @@ config(){
   mkdir "${tmpdir}" 2>/dev/null || { echo "Error: Another instance running"; exit 1;}
   tmpgen(){ mktemp "${tmpdir}/.XXXXX";}; export -f tmpgen
 
-  export chat="${tmpdir}/chat" peers="${tmpdir}/peers" input="${tmpdir}/input"
+  export chat="${tmpdir}/chat" peers="${tmpdir}/peers" input="${tmpdir}/input" sess_peers="${tmpdir}/session_peers"
   :>"${chat}"; echo "Discovering...">"${peers}"; :>"${input}" # Clear files: Redirected no-op
 
   trap "trap '' TERM; pkill -s 0; rm -rf ${tmpdir}; ls -d ${IPFS_PATH}/room#* &>/dev/null || ipfs shutdown" exit # TODO: Replace pkill -s 0 with smthing better
@@ -143,6 +152,12 @@ identity(){
 } &>/dev/null; export -f identity
 
 identity || { echo "Error: Failed to generate key-pair" >&2; exit 1;}
+
+cache_peer(){
+  # Brief: Cache peerID given as argument. The cache will be used by con_cull
+  local peerID="${1}"
+  grep -q "${peerID}" "${sess_peers}" || echo "${peerID}" >> "${sess_peers}"
+} &>/dev/null; export -f cache_peer
 
 peer_pubkey_nick(){
   # Brief: Import pubkey of peer ID passed as argument and output its nick. Flag -n to force IPNS update (nocache).
@@ -167,6 +182,7 @@ subscriber_daemon(){
   local timestamp peerID readbuff sender buffer="$(tmpgen)"
   while ipfs swarm peers &>/dev/null;do # Until IPFS daemon exits
     read peerID readbuff || return # Failure: Handle unexpected EOF from pubsub; i.e. when IPFS daemon dies
+    cache_peer "${peerID}"
     (sender="$(peer_pubkey_nick "${peerID}")" || exit 1 # Note absence of -n flag in peer_pubkey_nick
     echo -n "${readbuff}" | base64 -d | \
       gnupg --passphrase "${enc_key}" --pinentry-mode loopback -d > "${buffer}" || exit 1
@@ -178,24 +194,54 @@ subscriber_daemon(){
 
 subscriber_daemon &
 
+con_cull(){
+  # Brief: Cull all connections to peers except those in the file provided as argument or cache and the connection to relay (if any)
+  local curr_self_address="$(ipfs id "${selfID}" -f="<addrs>\n")" peerID_list="${1:-"${sess_peers}"}"
+  local multiaddress peerID
+  for multiaddress in $(ipfs swarm peers); do
+    peerID="${multiaddress##*/}"
+    grep -q "${peerID}" "${peerID_list}" || (echo "${curr_self_address}" | grep -q "${peerID}") || \
+      ipfs swarm disconnect "/p2p/${peerID}" &>/dev/null
+  done
+} &>/dev/null; export -f con_cull
+
 peering_daemon(){
   # Brief: Discover & connect to chat-peers & announce self for others to discover - both at regular intervals
   local peerID peerID_list="$(tmpgen)" buffer="$(tmpgen)"
-  local interval=120
+  local interval=30
   while ipfs swarm peers &>/dev/null;do # Do as long as IPFS daemon is alive
     local timestamp="${EPOCHSECONDS}"
-    local nonce="$(hmac "${room}" "$((timestamp/interval))" | ipfs add -Q --pin=false)" # Announce time based nonce
-    timeout 5 ipfs dht findprovs "${nonce}" > "${peerID_list}" # Peer discovery. TODO: Need a slower one?
-    for peerID in $(sort -u <(ipfs pubsub peers "${topic}") "${peerID_list}"); do # Connecting to peers and importing their pubkeys
-      (local alias="$(peer_pubkey_nick -n "${peerID}")" && \
+    ipfs pubsub pub "${broadcast}" "$(ipfs id "${selfID}" -f="<addrs>\n")" # Announce own multiaddresses
+    local nonce="$(hmac "${room}" "$((timestamp/interval/5))" | ipfs add -Q --pin=false)" # Announce time based nonce
+    sort -u <(ipfs pubsub peers "${topic}") <(timeout 5 ipfs dht findprovs "${nonce}") > "${peerID_list}" # Peer discovery. TODO: Need a slower one?
+    for peerID in $(cat "${peerID_list}"); do # Connecting to peers and importing their pubkeys
+      (cache_peer "${peerID}"
+      local alias="$(peer_pubkey_nick -n "${peerID}")" && \
       flock "${buffer}" echo "${alias}(${peerID})" >> "${buffer}")& # Non-blocking. Notice the nocache flag -n forcing IPNS update
+      local wait_pid_list+=($!)
     done
-    sleep "$((interval-EPOCHSECONDS+timestamp))"
+    wait ${wait_pid_list[@]}
     mv "${buffer}" "${peers}" # Atomic move
+    con_cull # Need for DHT is over for now. So, let's cull connections.
+    sleep "$((interval-EPOCHSECONDS+timestamp))" #2>/dev/null # Redirection for when the sleep time is negative
   done  
 } &>"${tmpdir}/peering_daemon.log"; export -f peering_daemon
 
 echo "Status: Discovering peers..." >&2 ; peering_daemon &
+
+pubsub_conn(){
+  # Brief: Connect to multiaddresses that are broadcast over pubsub
+  local multiaddress peerID
+  while ipfs swarm peers &>/dev/null;do
+    read multiaddress
+    peerID="${multiaddress##*/}"
+    cache_peer "${peerID}"
+    [[ "${peerID}" == "${selfID}" ]] || (ipfs swarm peers | grep -q "${peerID}") || ipfs swarm connect "${multiaddress}"
+    # TODO: & (bg) or not?
+  done < <(ipfs pubsub sub "${broadcast}")
+} &>"${tmpdir}/pubsub_conn.log"; export -f pubsub_conn
+
+pubsub_conn &
 
 send(){
   # Brief: Encrypt and sign user's msg & publish to pubsub
