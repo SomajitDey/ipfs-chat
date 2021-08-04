@@ -14,6 +14,7 @@
 ```shell
 ipfs-chat -r <room> -n <nick> -d <download directory> -c <ipfs repo>
 ipfs-chat -g # Generating a random room name, for when your brain can't do it
+ipfs-chat -v # Version
 ipfs-chat -h # Help
 ```
 
@@ -72,6 +73,8 @@ Connections to the chatroom peers are never closed.
 To achieve this, `ipfs-chat` uses its own connection manager and does not use the [basic connection manager](https://github.com/ipfs/go-ipfs/blob/master/docs/config.md#basic-connection-manager) that ships with `go-ipfs`.
 
 The go-ipfs config file has been tuned to reduce resource (CPU/bandwidth/memory) consumption.
+
+**Tip**: To show bandwidth usage by the node at the end of a session, launch `ipfs-chat` with the `-b` flag. Note that this shows the cumulative bandwidth consumption by all `ipfs-chat` instances using the same node at the same time.
 
 ## Future directions
 
