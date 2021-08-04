@@ -14,6 +14,7 @@
 ```shell
 ipfs-chat -r <room> -n <nick> -d <download directory> -c <ipfs repo>
 ipfs-chat -g # Generating a random room name, for when your brain can't do it
+ipfs-chat -v # Version
 ipfs-chat -h # Help
 ```
 

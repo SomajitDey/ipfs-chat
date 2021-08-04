@@ -17,7 +17,8 @@ Version: " >&2
 usage(){
   # Brief: Show help and exit
   echo "Usage: ipfs-chat [-n <nick>] [-r <room>] [-d <file-download-dir>] [-c <ipfs-repo-path>]"
-  echo "Generate random room: ipfs-chat -g"
+  echo "Generate random room name: ipfs-chat -g"
+  echo "Version: ipfs-chat -v"
   exit 1
 } >&2; export -f usage
 
@@ -53,13 +54,14 @@ dep_check(){
 
 parse_cmdline(){
   local opt OPTIND=1
-  while getopts n:r:d:c:gh opt;do
+  while getopts n:r:d:c:gvh opt;do
     case "${opt}" in
       n) nick="${OPTARG}";;
       r) room="${OPTARG}";;
       d) dldir="${OPTARG}";;
       c) local repo="${OPTARG}";;
       g) echo -n "Random room: " >&2; dd if=/dev/urandom count=1 bs=6 2>/dev/null | base64; exit;;
+      v) echo "${version}"; exit;;
       h|*) usage;;
     esac
   done
@@ -100,7 +102,7 @@ ipfs_config(){
 #  ipfs config --json Swarm.ConnMgr.LowWater 20
 #  ipfs config --json Swarm.ConnMgr.HighWater 21
 #  ipfs config Swarm.ConnMgr.GracePeriod 2m0s
-  ipfs config --json Swarm.DisableBandwidthMetrics true
+  ipfs config --json Swarm.DisableBandwidthMetrics true # Change true to false if `ipfs stats bw` is to be done
 
   pscan(){
     # Brief: Give an unused, random, local TCP port except the one passed as argument
@@ -148,7 +150,7 @@ config
 
 identity(){
   # Brief: Generate key-pair. Claim nick & pubkey using IPNS.
-  export GNUPGHOME="${IPFS_PATH}/gpg" pubkey="${tmpdir}/pubkey.asc"
+  export GNUPGHOME="${IPFS_PATH}/gpg" pubkey="${tmpdir}/pubkey.asc" peer_kbx="${tmpdir}/peer.kbx"
   gnupg(){ flock "${GNUPGHOME}" gpg --batch -q "${@}";}; export -f gnupg # Thread-safe gpg in batch mode
   if mkdir "${GNUPGHOME}"; then
     gnupg --passphrase '' --pinentry-mode loopback --quick-gen-key "${selfID}" ed25519 default 0 || return 1
@@ -187,9 +189,9 @@ peer_pubkey_nick(){
   [[ -n "${ipfs_path}" ]] || return 1
   local peer_pubkey="${tmpdir}/${ipfs_path##*/}"
   if ! [[ -e "${peer_pubkey}" ]]; then
-    gnupg --yes --delete-keys "${peerID}"
+    gnupg --yes --no-default-keyring --keyring "${peer_kbx}" --delete-keys "${peerID}"
     flock "${peer_pubkey}" ipfs get -o "${peer_pubkey}" "${ipfs_path}" && \
-    gnupg --import "${peer_pubkey}" || rm -f "${peer_pubkey}"
+    gnupg --no-default-keyring --keyring "${peer_kbx}" --import "${peer_pubkey}" || rm -f "${peer_pubkey}"
   fi &>/dev/null
   tail -n1 "${peer_pubkey}"
 } 2>/dev/null ; export -f peer_pubkey_nick
@@ -202,7 +204,7 @@ subscriber_daemon(){
     cache_peer "${peerID}"
     (sender="$(peer_pubkey_nick "${peerID}")" || exit 1 # Note absence of -n flag in peer_pubkey_nick
     echo -n "${readbuff}" | base64 -d | \
-      gnupg --passphrase "${enc_key}" --pinentry-mode loopback -d > "${buffer}" || exit 1
+      gnupg --keyring "${peer_kbx}" --passphrase "${enc_key}" --pinentry-mode loopback -d > "${buffer}" || exit 1
     timestamp="$(head -n1 "${buffer}")"
     timestamp="$(date -d @${timestamp} +"%a %H:%M:%S")"
     flock "${chat}" cat <(echo "${timestamp} ${sender} (${peerID})") <(tail -n+2 "${buffer}" | fold -w 40) <(echo -e \\n) >> "${chat}")&
