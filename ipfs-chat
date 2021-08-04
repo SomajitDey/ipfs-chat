@@ -54,7 +54,7 @@ dep_check(){
 
 parse_cmdline(){
   local opt OPTIND=1
-  while getopts n:r:d:c:gvh opt;do
+  while getopts n:r:d:c:gvbh opt;do
     case "${opt}" in
       n) nick="${OPTARG}";;
       r) room="${OPTARG}";;
@@ -62,6 +62,7 @@ parse_cmdline(){
       c) local repo="${OPTARG}";;
       g) echo -n "Random room: " >&2; dd if=/dev/urandom count=1 bs=6 2>/dev/null | base64; exit;;
       v) echo "${version}"; exit;;
+      b) export disable_bandwidth_metrics="false";;
       h|*) usage;;
     esac
   done
@@ -102,7 +103,7 @@ ipfs_config(){
 #  ipfs config --json Swarm.ConnMgr.LowWater 20
 #  ipfs config --json Swarm.ConnMgr.HighWater 21
 #  ipfs config Swarm.ConnMgr.GracePeriod 2m0s
-  ipfs config --json Swarm.DisableBandwidthMetrics true # Change true to false if `ipfs stats bw` is to be done
+  ipfs config --json Swarm.DisableBandwidthMetrics "${disable_bandwidth_metrics:-true}"
 
   pscan(){
     # Brief: Give an unused, random, local TCP port except the one passed as argument
@@ -198,13 +199,14 @@ peer_pubkey_nick(){
 
 subscriber_daemon(){
   # Brief: Listen to messages at pubsub, decrypt & verify signature, display if ok
-  local timestamp peerID readbuff sender buffer="$(tmpgen)"
+  local timestamp peerID readbuff sender buffer="$(tmpgen)" gpg_stderr="$(tmpgen)"
   while ipfs swarm peers &>/dev/null;do # Until IPFS daemon exits
     read peerID readbuff || return # Failure: Handle unexpected EOF from pubsub; i.e. when IPFS daemon dies
     cache_peer "${peerID}"
     (sender="$(peer_pubkey_nick "${peerID}")" || exit 1 # Note absence of -n flag in peer_pubkey_nick
     echo -n "${readbuff}" | base64 -d | \
-      gnupg --keyring "${peer_kbx}" --passphrase "${enc_key}" --pinentry-mode loopback -d > "${buffer}" || exit 1
+      gnupg --keyring "${peer_kbx}" --passphrase "${enc_key}" --pinentry-mode loopback -d > "${buffer}" 2> "${gpg_stderr}" || exit 1
+    grep -iq "Good signature from \"${peerID}\"" "${gpg_stderr}" || exit 1 # Verify authenticity/signature
     timestamp="$(head -n1 "${buffer}")"
     timestamp="$(date -d @${timestamp} +"%a %H:%M:%S")"
     flock "${chat}" cat <(echo "${timestamp} ${sender} (${peerID})") <(tail -n+2 "${buffer}" | fold -w 40) <(echo -e \\n) >> "${chat}")&
@@ -262,7 +264,7 @@ peering_daemon(){
   done  
 } &>"${tmpdir}/peering_daemon.log"; export -f peering_daemon
 
-echo "Status: Discovering peers..." >&2 ; peering_daemon &
+peering_daemon &
 
 send(){
   # Brief: Encrypt and sign user's msg & publish to pubsub
@@ -305,11 +307,15 @@ ui(){
            dialog --keep-tite --no-shadow --exit-label "Back"\
            --title "ipfs-chat-room: ${room}" --begin 0 0 --textbox "${chat}" "${tty_height}" "${tty_width}"
            ;;
-        *) echo "Status: Exiting..." >&2 ; exit ;; # Esc
+        *) return "${exit_code}";; # Esc
       esac
   done
 }; export -f ui
 
-ui
+echo "Status: Launching UI...(If it takes a long time to open, try pressing Enter)" >&2; ui
+
+[[ -v disable_bandwidth_metrics ]] && echo "Stats: $(ipfs stats bw | head -n3)" >&2
+
+echo "Status: Exiting..." >&2
 
 exit

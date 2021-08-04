@@ -74,6 +74,8 @@ To achieve this, `ipfs-chat` uses its own connection manager and does not use th
 
 The go-ipfs config file has been tuned to reduce resource (CPU/bandwidth/memory) consumption.
 
+**Tip**: To show bandwidth usage by the node at the end of a session, launch `ipfs-chat` with the `-b` flag. Note that this shows the cumulative bandwidth consumption by all `ipfs-chat` instances using the same node at the same time.
+
 ## Future directions
 
 1. Secure file sharing. Files to be shared can simply be dragged and dropped in the text-input area. Support for WSL.
