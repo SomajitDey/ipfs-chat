@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Details: See info and usage functions below
 
-export version="0.0.0 (alpha)"
+export version="0.0.2 (alpha)"
 
 info(){
   # Brief: Info about ipfs-chat
@@ -211,6 +211,20 @@ subscriber_daemon(){
 
 subscriber_daemon &
 
+pubsub_conn(){
+  # Brief: Connect to multiaddresses that are broadcast over pubsub
+  local multiaddress peerID
+  while ipfs swarm peers &>/dev/null;do
+    read multiaddress
+    peerID="${multiaddress##*/}"
+    cache_peer "${multiaddress}"
+    [[ "${peerID}" == "${selfID}" ]] || (ipfs swarm peers | grep -q "${peerID}") || ipfs swarm connect "${multiaddress}"
+    # TODO: & (bg) or not?
+  done < <(ipfs pubsub sub "${broadcast}")
+} &>"${tmpdir}/pubsub_conn.log"; export -f pubsub_conn
+
+pubsub_conn &
+
 con_cull(){
   # Brief: Cull all connections except those in the file provided as argument or cache, & the connection to relay (if any)
   # Purpose: Reducing bandwidth usage by killing all irrelevant connections
@@ -228,17 +242,18 @@ peering_daemon(){
   local peerID peerID_list="$(tmpgen)" buffer="$(tmpgen)"
   local interval=30
   while ipfs swarm peers &>/dev/null;do # Do as long as IPFS daemon is alive
+    local dht_ops_pid=() # Stores pid's of background DHT operations executing in the current pass
     local timestamp="${EPOCHSECONDS}"
     ipfs pubsub pub "${broadcast}" "$(ipfs id "${selfID}" -f="<addrs>\n")" & # Announce own multiaddresses
-    local nonce="$(hmac "${room}" "$((timestamp/interval/5))" | ipfs add -Q --pin=false)" # Announce time based nonce
+    local nonce="$(hmac "${room}" "$((timestamp/120))" | ipfs add -Q --pin=false)" # Announce time based nonce
     sort -u <(ipfs pubsub peers "${topic}") <(timeout 5 ipfs dht findprovs "${nonce}") > "${peerID_list}" # Peer discovery. TODO: Need a slower one?
     for peerID in $(cat "${peerID_list}"); do # Connecting to peers and importing their pubkeys
       (cache_peer "${peerID}"
       local alias="$(peer_pubkey_nick -n "${peerID}")" && \
       flock "${buffer}" echo "${alias} (${peerID})" >> "${buffer}")& # Non-blocking. Notice the nocache flag -n forcing IPNS update
-      local wait_pid_list+=($!)
+      local dht_ops_pid+=($!)
     done
-    wait ${wait_pid_list[@]} # Wait till all DHT operations are complete
+    wait ${dht_ops_pid[@]} # Wait till all DHT operations are complete
     mv "${buffer}" "${peers}" # Atomic move
     con_cull # Need for DHT is over for now. So, let's cull unnecessary connections to reduce bandwidth usage.
     sleep "$((interval-EPOCHSECONDS+timestamp))" #2>/dev/null # Redirection for when the sleep time is negative
@@ -246,20 +261,6 @@ peering_daemon(){
 } &>"${tmpdir}/peering_daemon.log"; export -f peering_daemon
 
 echo "Status: Discovering peers..." >&2 ; peering_daemon &
-
-pubsub_conn(){
-  # Brief: Connect to multiaddresses that are broadcast over pubsub
-  local multiaddress peerID
-  while ipfs swarm peers &>/dev/null;do
-    read multiaddress
-    peerID="${multiaddress##*/}"
-    cache_peer "${multiaddress}"
-    [[ "${peerID}" == "${selfID}" ]] || (ipfs swarm peers | grep -q "${peerID}") || ipfs swarm connect "${multiaddress}"
-    # TODO: & (bg) or not?
-  done < <(ipfs pubsub sub "${broadcast}")
-} &>"${tmpdir}/pubsub_conn.log"; export -f pubsub_conn
-
-pubsub_conn &
 
 send(){
   # Brief: Encrypt and sign user's msg & publish to pubsub
