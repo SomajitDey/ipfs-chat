@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Details: See info and usage functions below
 
-export version="0.0.2 (alpha)"
+export version="0.1.0 (alpha)"
 
 info(){
   # Brief: Info about ipfs-chat
@@ -154,7 +154,16 @@ identity(){
   export GNUPGHOME="${IPFS_PATH}/gpg" pubkey="${tmpdir}/pubkey.asc" peer_kbx="${tmpdir}/peer.kbx"
   gnupg(){ flock "${GNUPGHOME}" gpg --batch -q "${@}";}; export -f gnupg # Thread-safe gpg in batch mode
   if mkdir "${GNUPGHOME}"; then
-    gnupg --passphrase '' --pinentry-mode loopback --quick-gen-key "${selfID}" ed25519 default 0 || return 1
+    gnupg --gen-key << EOF
+  %no-protection
+  Key-Type: EDDSA
+    Key-Curve: ed25519
+  Subkey-Type: ECDH
+    Subkey-Curve: cv25519
+  Name-Real: ${selfID}
+  Expire-Date: 0
+EOF
+    (($? == 0)) || return 1
     gnupg -a -o "${GNUPGHOME}/pubkey.asc" --export "${selfID}"
   fi
   cat "${GNUPGHOME}/pubkey.asc" <(echo "${nick}") > "${pubkey}"
