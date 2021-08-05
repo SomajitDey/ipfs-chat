@@ -190,7 +190,8 @@ connect_peer(){
 
 peer_pubkey_nick(){
   # Brief: Import pubkey of peer ID passed as argument and output its nick. Flag -n to force IPNS update (nocache).
-  # TODO: peer_pubkey=CID_peerID
+  # TODO: TBD: peer_pubkey=CID_peerID
+  # TODO: Malicious peer detection and blocking.
   local OPTIND=1 opt nocache
   getopts n opt; [[ "${opt}" == "n" ]] && nocache="--nocache"
   local peerID="${!OPTIND}"
@@ -199,6 +200,8 @@ peer_pubkey_nick(){
   [[ -n "${ipfs_path}" ]] || return 1
   local peer_pubkey="${tmpdir}/${ipfs_path##*/}"
   if ! [[ -e "${peer_pubkey}" ]]; then
+    # Check size of file before download to avoid spam. Pubkey is 669 bytes to be exact. Add some grace for nick etc.
+    local peer_pubkey_size="$(ipfs files stat --size "${ipfs_path}")" && ((peer_pubkey_size<1000)) || return 1
     gnupg --yes --no-default-keyring --keyring "${peer_kbx}" --delete-keys "${peerID}"
     flock "${peer_pubkey}" ipfs get -o "${peer_pubkey}" "${ipfs_path}" && \
     gnupg --no-default-keyring --keyring "${peer_kbx}" --import "${peer_pubkey}" || rm -f "${peer_pubkey}"
@@ -208,6 +211,7 @@ peer_pubkey_nick(){
 
 subscriber_daemon(){
   # Brief: Listen to messages at pubsub, decrypt & verify signature, display if ok
+  # TODO: Malicious peer detection and blocking.
   local timestamp peerID readbuff sender buffer="$(tmpgen)" gpg_stderr="$(tmpgen)"
   while ipfs swarm peers &>/dev/null;do # Until IPFS daemon exits
     read peerID readbuff || return # Failure: Handle unexpected EOF from pubsub; i.e. when IPFS daemon dies
