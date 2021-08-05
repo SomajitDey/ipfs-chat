@@ -191,17 +191,16 @@ connect_peer(){
 peer_pubkey_nick(){
   # Brief: Import pubkey of peer ID passed as argument and output its nick. Flag -n to force IPNS update (nocache).
   # TODO: TBD: peer_pubkey=CID_peerID
-  # TODO: Malicious peer detection and blocking.
   local OPTIND=1 opt nocache
   getopts n opt; [[ "${opt}" == "n" ]] && nocache="--nocache"
   local peerID="${!OPTIND}"
   connect_peer "${peerID}" & # Non-blocking
-  local ipfs_path="$(until ipfs name resolve ${nocache} "/ipns/${peerID}"; do ipfs swarm peers &>/dev/null || break; done)"
+  local ipfs_path="$(i=0; until ipfs name resolve ${nocache} "/ipns/${peerID}" || ((i>5));do ((i++)); done)"
   [[ -n "${ipfs_path}" ]] || return 1
   local peer_pubkey="${tmpdir}/${ipfs_path##*/}"
   if ! [[ -e "${peer_pubkey}" ]]; then
     # Check size of file before download to avoid spam. Pubkey is 669 bytes to be exact. Add some grace for nick etc.
-    local peer_pubkey_size="$(ipfs files stat --size "${ipfs_path}")" && ((peer_pubkey_size<1000)) || return 1
+    (("$(ipfs files stat --size "${ipfs_path}" || 1001)" < 1000)) || return 1
     gnupg --yes --no-default-keyring --keyring "${peer_kbx}" --delete-keys "${peerID}"
     flock "${peer_pubkey}" ipfs get -o "${peer_pubkey}" "${ipfs_path}" && \
     gnupg --no-default-keyring --keyring "${peer_kbx}" --import "${peer_pubkey}" || rm -f "${peer_pubkey}"
@@ -212,18 +211,18 @@ peer_pubkey_nick(){
 subscriber_daemon(){
   # Brief: Listen to messages at pubsub, decrypt & verify signature, display if ok
   # TODO: Malicious peer detection and blocking.
-  local timestamp peerID readbuff sender buffer="$(tmpgen)" gpg_stderr="$(tmpgen)"
-  while ipfs swarm peers &>/dev/null;do # Until IPFS daemon exits
-    read peerID readbuff || return # Failure: Handle unexpected EOF from pubsub; i.e. when IPFS daemon dies
+  local timestamp peerID readbuff recipID sender buffer="$(tmpgen)" gpg_stderr="$(tmpgen)"
+  while read -rn10000 peerID readbuff recipID;do # Read limited no. of bytes to avoid spam
     cache_peer "${peerID}"
     (sender="$(peer_pubkey_nick "${peerID}")" || exit 1 # Note absence of -n flag in peer_pubkey_nick
     echo -n "${readbuff}" | base64 -d | \
       gnupg --keyring "${peer_kbx}" --passphrase "${enc_key}" --pinentry-mode loopback -d > "${buffer}" 2> "${gpg_stderr}" || exit 1
     grep -iq "Good signature from \"${peerID}\"" "${gpg_stderr}" || exit 1 # Verify authenticity/signature
+    grep -zq '[[:print:]]*' "${buffer}" || exit 1 # Check msg is text only to avoid spam
     timestamp="$(head -n1 "${buffer}")"
     timestamp="$(date -d @${timestamp} +"%a %H:%M:%S")"
     flock "${chat}" cat <(echo "${timestamp} ${sender} (${peerID})") <(tail -n+2 "${buffer}" | fold -w 40) <(echo -e \\n) >> "${chat}")&
-  done < <(ipfs pubsub sub "${topic}")
+  done < <(ipfs pubsub sub "${topic}" | grep --line-buffered -x '[[:alnum:]]*[[:blank:]][[:alnum:]+/=]*[[:blank:]][[:alnum:]]*')
 } &>"${tmpdir}/subscriber_daemon.log"; export -f subscriber_daemon
 
 subscriber_daemon &
@@ -231,13 +230,12 @@ subscriber_daemon &
 pubsub_conn(){
   # Brief: Connect to multiaddresses that are broadcast over pubsub
   local multiaddress peerID
-  while ipfs swarm peers &>/dev/null;do
-    read multiaddress
+  while read -rn500 multiaddress;do # Read limited no. of bytes to avoid spam
     peerID="${multiaddress##*/}"
     cache_peer "${multiaddress}"
     [[ "${peerID}" == "${selfID}" ]] || (ipfs swarm peers | grep -q "${peerID}") || ipfs swarm connect "${multiaddress}"
-    # TODO: & (bg) or not?
-  done < <(ipfs pubsub sub "${broadcast}")
+    # TODO: TBD: & (bg) or not?
+  done < <(ipfs pubsub sub "${broadcast}" | grep --line-buffered -x '[[:alnum:]/.:-]*')
 } &>"${tmpdir}/pubsub_conn.log"; export -f pubsub_conn
 
 pubsub_conn &
@@ -256,7 +254,7 @@ con_cull(){
 
 peering_daemon(){
   # Brief: Discover & connect to chat-peers & announce self for others to discover - at regular intervals
-  local peerID peerID_list="$(tmpgen)" buffer="$(tmpgen)"
+  local peerID peer_nick peerID_list="$(tmpgen)" buffer="$(tmpgen)"
   local interval=30
   while ipfs swarm peers &>/dev/null;do # Do as long as IPFS daemon is alive
     local dht_ops_pid=() # Stores pid's of background DHT operations executing in the current pass
@@ -266,8 +264,8 @@ peering_daemon(){
     sort -u <(ipfs pubsub peers "${topic}") <(timeout 5 ipfs dht findprovs "${nonce}") > "${peerID_list}" # Peer discovery. TODO: Need a slower one?
     for peerID in $(cat "${peerID_list}"); do # Connecting to peers and importing their pubkeys
       (cache_peer "${peerID}"
-      local alias="$(peer_pubkey_nick -n "${peerID}")" && \
-      flock "${buffer}" echo "${alias} (${peerID})" >> "${buffer}")& # Non-blocking. Notice the nocache flag -n forcing IPNS update
+      peer_nick="$(peer_pubkey_nick -n "${peerID}")" && \
+        flock "${buffer}" echo "${peer_nick} (${peerID})" >> "${buffer}")& # Non-blocking. Notice the nocache flag -n forcing IPNS update
       local dht_ops_pid+=($!)
     done
     wait ${dht_ops_pid[@]} # Wait till all DHT operations are complete
@@ -285,7 +283,7 @@ send(){
   local msg="$(tmpgen)" ; mv "${input}" "${msg}"
   (local buffer="$(cat <(echo "${EPOCHSECONDS}") "${msg}" | \
     gnupg --passphrase "${enc_key}" --pinentry-mode loopback -o- -s -c --cipher-algo AES128 | base64 -w0)"
-  ipfs pubsub pub "${topic}" "${selfID} ${buffer}"$'\n') &
+  ipfs pubsub pub "${topic}" "${selfID} ${buffer} all"$'\n') &
 } &>/dev/null; export -f send
 
 ui(){
