@@ -267,7 +267,7 @@ peering_daemon(){
       local dht_ops_pid+=($!)
     done
     wait ${dht_ops_pid[@]} # Wait till all DHT operations are complete
-    mv "${buffer}" "${peers}" # Atomic move
+    sort -o "${buffer}" "${buffer}" && mv "${buffer}" "${peers}" # In-place sort followed by atomic move
     con_cull # Need for DHT is over for now. So, let's cull unnecessary connections to reduce bandwidth usage.
     sleep "$((interval-EPOCHSECONDS+timestamp))" #2>/dev/null # Redirection for when the sleep time is negative
   done  

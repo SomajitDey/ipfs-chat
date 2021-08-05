@@ -78,10 +78,14 @@ The go-ipfs config file has been tuned to reduce resource (CPU/bandwidth/memory)
 
 ## Future directions
 
-1. Secure file sharing. Files to be shared can simply be dragged and dropped in the text-input area. Support for WSL.
+1. Secure file sharing. Files to be shared can simply be dragged and dropped in the text-input area. Support for WSL. Download limit (byte size *int*) can be specified with option `-D` to control bandwidth consumption - the user would be prompted before larger files downloads. `-D 0` : prompt always; `-D n` : prompt before downloading files larger than *n* bytes; `-D -n` : prompt never.
 2. Using Argon2 for more security (See [Security](#security)).
 3. Private messages: To PM a peer simply prefix your message with @nick(peer ID).
-4. Offline mode such that even if a peer goes offline, it can obtain the missed messages when it comes back online [This may well be beyond my capabilities].
+4. Command-line option for manual update: `-u`. Try auto-update in background always and prompt user when new update is available.
+5. Command-line option for logging chat: `-l <logfile-path>`
+6. Detect and block malicious peers. All direct connections to blocked peers are culled. Users can also block (and unblock later) specific nicks (regex pattern), peer IDs. While blocking users can opt for - 1. Block permanently; 2. For present session only. **TBD**: News of this blocking (who blocked whom and when) may or may not be published over pubsub for other peers to see and decide for themselves.
+7. Secure directory transfer
+8. Offline mode such that even if a peer goes offline, it can obtain the missed messages when it comes back online [This may well be beyond my capabilities]. Once [`orbit-db-cli`](https://github.com/orbitdb/orbit-db-cli) matures, it might help achieve this. Random idea: Online peers publish CIDs of time-based logs at regular intervals over pubsub. Logs are directories containing chats - one message in one file. Even if logs of two peers don't match exactly, they will have many files in common, thus achieving major deduplication and also helping availability across the ipfs-chat network.
 
 ## Bug-reports and Feedbacks
 
