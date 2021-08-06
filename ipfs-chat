@@ -238,27 +238,27 @@ peer_pubkey_nick(){
 subscriber_daemon(){
   # Brief: Listen to messages at pubsub, decrypt & verify signature, display if ok
   # TODO: Malicious peer detection and blocking.
-  local timestamp CID peerID readbuff recipID sender buffer="$(tmpgen)" gpg_stderr="$(tmpgen)"
+  local timestamp CID peerID readbuff recipID sender buffer="$(tmpgen)" gpg_stderr="$(tmpgen)" prefix
   while read -r peerID readbuff recipID;do
     cache_peer "${peerID}"
     (sender="$(peer_pubkey_nick "${peerID}")" || exit 1 # Note absence of -n flag in peer_pubkey_nick
-    echo -n "${readbuff}" | base64 -d | \
     case "${recipID}" in
       all) 
+        prefix="$(printf '=%.0s' {1..40})"$'\n'
         gnupg --keyring "${peer_kbx}" --passphrase "${enc_key}" --pinentry-mode loopback -d
         ;;
       "${selfID}")
-        local priv_msg="************Private message*********"$'\n'
+        prefix="**************Private message***********"$'\n'
         gnupg --keyring "${peer_kbx}" -d
         ;;
       *) exit 1;;
-    esac > "${buffer}" 2> "${gpg_stderr}" || exit 1
+    esac < <(echo -n "${readbuff}" | base64 -d) > "${buffer}" 2> "${gpg_stderr}" || exit 1
     grep -iq "Good signature from \"${peerID}\"" "${gpg_stderr}" || exit 1 # Verify authenticity/signature
     grep -xq '[[:print:]]*' "${buffer}" || exit 1 # Check msg is text only to avoid spam
     read timestamp CID < <(head -n1 "${buffer}" | grep -xE '[[:digit:]]*([[:blank:]][[:alnum:]]*)?')
     timestamp="$(date -d @${timestamp} +"%a %H:%M:%S")" || exit 1
     flock "${chat}" \
-      cat <(echo "${priv_msg}${timestamp} ${sender} (${peerID})") <(tail -n+2 "${buffer}" | fold -w 40) <(echo -e \\n) \
+      cat <(echo "${prefix}${sender} @${peerID:${#peerID}-6:6} ${timestamp}") <(tail -n+2 "${buffer}" | fold -w 40) <(echo -e \\n) \
       >> "${chat}")&
   done < <(ipfs pubsub sub "${topic}" | grep --line-buffered -x '[[:alnum:]]*[[:blank:]][[:alnum:]+/=]*[[:blank:]][[:alnum:]]*')
 } &>"${tmpdir}/subscriber_daemon.log"; export -f subscriber_daemon
@@ -303,7 +303,7 @@ peering_daemon(){
     for peerID in $(cat "${peerID_list}"); do # Connecting to peers and importing their pubkeys
       (cache_peer "${peerID}"
       peer_nick="$(peer_pubkey_nick -n "${peerID}")" && \
-        flock "${buffer}" echo "${peer_nick} (${peerID})" >> "${buffer}")& # Non-blocking. Notice the nocache flag -n forcing IPNS update
+        flock "${buffer}" echo "${peer_nick} @${peerID:${#peerID}-6:6}" >> "${buffer}")& # Non-blocking. Notice the nocache flag -n forcing IPNS update
       local dht_ops_pid+=($!)
     done
     wait ${dht_ops_pid[@]} # Wait till all DHT operations are complete
