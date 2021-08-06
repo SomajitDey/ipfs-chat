@@ -16,10 +16,11 @@ Version: " >&2
 
 usage(){
   # Brief: Show help and exit
-  echo "Usage: ipfs-chat [-n <nick>] [-r <room>] [-d <file-download-dir>] [-c <ipfs-repo-path>]"
-  echo "Generate random room name: ipfs-chat -g"
-  echo "Version: ipfs-chat -v"
-  exit 1
+  echo -e "\nUsage: ipfs-chat [-n <nick>] [-r <room>] [-d <file-download-dir>] [-c <ipfs-repo-path>] [-o <chat-log-path>] [-w | -l]"
+  echo -e "\nNote: -w or -W implies WAN-only connection; -l|-L is LAN-only; To have both WAN & LAN, don't use any of these flags"
+  echo -e "\nVersion: ipfs-chat -v"
+  echo -e "\nGenerate random room name: ipfs-chat -g"
+  echo ; exit 1
 } >&2; export -f usage
 
 hmac(){
@@ -54,13 +55,16 @@ dep_check(){
 
 parse_cmdline(){
   local opt OPTIND=1
-  while getopts n:r:d:c:gvbh opt;do
+  while getopts n:r:d:c:gwWlLo:vbh opt;do
     case "${opt}" in
       n) nick="${OPTARG}";;
       r) room="${OPTARG}";;
       d) dldir="${OPTARG}";;
       c) local repo="${OPTARG}";;
       g) echo -n "Random room: " >&2; dd if=/dev/urandom count=1 bs=6 2>/dev/null | base64; exit;;
+      w|W) export connect_mode="WAN";;
+      l|L) export connect_mode="LAN";;
+      o) export chat="${OPTARG}";;
       v) echo "${version}"; exit;;
       b) export disable_bandwidth_metrics="false";;
       h|*) usage;;
@@ -77,10 +81,20 @@ info
 ipfs_config(){
   # Brief: Configure IPFS node
   # Note: Use random ports for everything so that multiple IPFS nodes can coexist on the same machine
+  # Note: Most configs below are for reducing bandwidth and CPU usage
   echo -ne "Status: Configuring IPFS node...\r"
-  ipfs id &>/dev/null || \
-    { ipfs init --profile lowpower >/dev/null && ipfs config profile apply randomports >/dev/null;} || \
-    { echo "Error: Failed to create IPFS repo at ${IPFS_PATH}"; exit 1;}
+  if ! ipfs id &>/dev/null; then
+    (ipfs init --profile lowpower && ipfs config profile apply randomports) >/dev/null || \
+      { echo "Error: Failed to create IPFS repo at ${IPFS_PATH}"; exit 1;}
+    ipfs config Pubsub.Router gossipsub
+    ipfs config Ipns.RepublishPeriod 2m0s
+    ipfs config Ipns.RecordLifetime 24h
+    ipfs config Reprovider.Interval 2m0s
+    ipfs config Reprovider.Strategy roots
+    ipfs config Routing.Type dhtclient
+    ipfs config Swarm.ConnMgr.Type none
+    ipfs config --bool Swarm.EnableRelayHop false
+  fi
 
   export sess_peers="${IPFS_PATH}/session_peers" # This file caches all ipfs-chat peers (multiaddresses) seen when node is online
   
@@ -91,19 +105,32 @@ ipfs_config(){
     ipfs repo gc
   fi &>/dev/null
   
-  ipfs config --json Swarm.EnableAutoRelay true # For NAT traversal
-  # Most configs below are for reducing bandwidth and CPU usage
-  ipfs config Pubsub.Router gossipsub
-  ipfs config Ipns.RepublishPeriod 2m0s
-  ipfs config Ipns.RecordLifetime 24h
-  ipfs config Reprovider.Interval 2m0s
-  ipfs config Reprovider.Strategy roots
-  ipfs config Routing.Type dhtclient
-  ipfs config Swarm.ConnMgr.Type none
-#  ipfs config --json Swarm.ConnMgr.LowWater 20
-#  ipfs config --json Swarm.ConnMgr.HighWater 21
-#  ipfs config Swarm.ConnMgr.GracePeriod 2m0s
-  ipfs config --json Swarm.DisableBandwidthMetrics "${disable_bandwidth_metrics:-true}"
+  ipfs config --bool Swarm.DisableBandwidthMetrics "${disable_bandwidth_metrics:-true}"
+
+  case "${connect_mode}" in
+    LAN)
+      ipfs config --bool Discovery.MDNS.Enabled true
+      ipfs bootstrap rm all &>/dev/null # For faster startup
+      # Disable NAT traversal
+      ipfs config --bool Swarm.DisableNatPortMap true
+      ipfs config --bool Swarm.Transports.Network.Relay false
+      # ipfs config --bool Swarm.DisableRelay true
+      ipfs config --bool Swarm.EnableAutoRelay false
+      ;;
+    WAN | *)
+      if [[ "${connect_mode}" == WAN ]]; then
+        ipfs config --bool Discovery.MDNS.Enabled false
+      else
+        ipfs config --bool Discovery.MDNS.Enabled true
+      fi
+      ipfs bootstrap add default &>/dev/null # For WAN-DHT
+      # For NAT traversal
+      ipfs config --bool Swarm.DisableNatPortMap false
+      ipfs config --bool Swarm.Transports.Network.Relay true
+      # ipfs config --bool Swarm.DisableRelay false
+      ipfs config --bool Swarm.EnableAutoRelay true
+      ;;
+  esac
 
   pscan(){
     # Brief: Give an unused, random, local TCP port except the one passed as argument
@@ -141,7 +168,7 @@ config(){
   mkdir "${tmpdir}" 2>/dev/null || { echo "Error: Another instance running"; exit 1;}
   tmpgen(){ mktemp "${tmpdir}/.XXXXX";}; export -f tmpgen
 
-  export chat="${tmpdir}/chat" peers="${tmpdir}/peers" input="${tmpdir}/input"
+  export chat="${chat:-"${tmpdir}/chat"}" peers="${tmpdir}/peers" input="${tmpdir}/input"
   :>"${chat}"; echo "Discovering...">"${peers}"; :>"${input}" # Clear files: Redirected no-op
 
   trap "trap '' TERM; pkill -s 0; rm -rf ${tmpdir}; ls -d ${IPFS_PATH}/room#* &>/dev/null || ipfs shutdown" exit # TODO: Replace pkill -s 0 with smthing better
