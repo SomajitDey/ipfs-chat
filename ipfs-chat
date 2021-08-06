@@ -28,7 +28,7 @@ hmac(){
   sha1(){ sha1sum < <(echo -n "${1}") | cut -d ' ' -f 1;} # Usage: sha1 <string>
   local key="$(sha1 "${1}")" data="$(sha1 "${2}")"
   echo -n "${data}" | xxd -r -p | openssl dgst -sha1 -mac hmac -macopt hexkey:"${key}" | cut -d ' ' -f 2 | \
-    xxd -r -p | base64 -w0
+    xxd -r -p | base64 -w0 | tr -d = # Deleting last = because base64 encoding 160-bit hmac always gives single =
 }; export -f hmac
 
 dep_check(){
@@ -211,17 +211,28 @@ peer_pubkey_nick(){
 subscriber_daemon(){
   # Brief: Listen to messages at pubsub, decrypt & verify signature, display if ok
   # TODO: Malicious peer detection and blocking.
-  local timestamp peerID readbuff recipID sender buffer="$(tmpgen)" gpg_stderr="$(tmpgen)"
-  while read -rn10000 peerID readbuff recipID;do # Read limited no. of bytes to avoid spam
+  local timestamp CID peerID readbuff recipID sender buffer="$(tmpgen)" gpg_stderr="$(tmpgen)"
+  while read -r peerID readbuff recipID;do
     cache_peer "${peerID}"
     (sender="$(peer_pubkey_nick "${peerID}")" || exit 1 # Note absence of -n flag in peer_pubkey_nick
     echo -n "${readbuff}" | base64 -d | \
-      gnupg --keyring "${peer_kbx}" --passphrase "${enc_key}" --pinentry-mode loopback -d > "${buffer}" 2> "${gpg_stderr}" || exit 1
+    case "${recipID}" in
+      all) 
+        gnupg --keyring "${peer_kbx}" --passphrase "${enc_key}" --pinentry-mode loopback -d
+        ;;
+      "${selfID}")
+        local priv_msg="************Private message*********"$'\n'
+        gnupg --keyring "${peer_kbx}" -d
+        ;;
+      *) exit 1;;
+    esac > "${buffer}" 2> "${gpg_stderr}" || exit 1
     grep -iq "Good signature from \"${peerID}\"" "${gpg_stderr}" || exit 1 # Verify authenticity/signature
-    grep -zq '[[:print:]]*' "${buffer}" || exit 1 # Check msg is text only to avoid spam
-    timestamp="$(head -n1 "${buffer}")"
-    timestamp="$(date -d @${timestamp} +"%a %H:%M:%S")"
-    flock "${chat}" cat <(echo "${timestamp} ${sender} (${peerID})") <(tail -n+2 "${buffer}" | fold -w 40) <(echo -e \\n) >> "${chat}")&
+    grep -xq '[[:print:]]*' "${buffer}" || exit 1 # Check msg is text only to avoid spam
+    read timestamp CID < <(head -n1 "${buffer}" | grep -xE '[[:digit:]]*([[:blank:]][[:alnum:]]*)?')
+    timestamp="$(date -d @${timestamp} +"%a %H:%M:%S")" || exit 1
+    flock "${chat}" \
+      cat <(echo "${priv_msg}${timestamp} ${sender} (${peerID})") <(tail -n+2 "${buffer}" | fold -w 40) <(echo -e \\n) \
+      >> "${chat}")&
   done < <(ipfs pubsub sub "${topic}" | grep --line-buffered -x '[[:alnum:]]*[[:blank:]][[:alnum:]+/=]*[[:blank:]][[:alnum:]]*')
 } &>"${tmpdir}/subscriber_daemon.log"; export -f subscriber_daemon
 
@@ -230,7 +241,7 @@ subscriber_daemon &
 pubsub_conn(){
   # Brief: Connect to multiaddresses that are broadcast over pubsub
   local multiaddress peerID
-  while read -rn500 multiaddress;do # Read limited no. of bytes to avoid spam
+  while read -r multiaddress;do
     peerID="${multiaddress##*/}"
     cache_peer "${multiaddress}"
     [[ "${peerID}" == "${selfID}" ]] || (ipfs swarm peers | grep -q "${peerID}") || ipfs swarm connect "${multiaddress}"
