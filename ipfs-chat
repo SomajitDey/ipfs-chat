@@ -179,7 +179,7 @@ config
 identity(){
   # Brief: Generate key-pair. Claim nick & pubkey using IPNS.
   export GNUPGHOME="${IPFS_PATH}/gpg" pubkey="${tmpdir}/pubkey.asc" peer_kbx="${tmpdir}/peer.kbx"
-  gnupg(){ flock "${GNUPGHOME}" gpg --batch -q "${@}";}; export -f gnupg # Thread-safe gpg in batch mode
+  gnupg(){ flock "${GNUPGHOME}" gpg --batch -q --always-trust "${@}";}; export -f gnupg # Thread-safe gpg in batch mode
   if mkdir "${GNUPGHOME}"; then
     gnupg --gen-key << EOF
   %no-protection
@@ -248,7 +248,7 @@ subscriber_daemon(){
         gnupg --keyring "${peer_kbx}" --passphrase "${enc_key}" --pinentry-mode loopback -d
         ;;
       "${selfID}")
-        prefix="**************Private message***********"$'\n'
+        prefix='**************Private message***********'$'\n'
         gnupg --keyring "${peer_kbx}" -d
         ;;
       *) exit 1;;
@@ -318,10 +318,26 @@ peering_daemon &
 send(){
   # Brief: Encrypt and sign user's msg & publish to pubsub
   [[ -s "${input}" ]] || return # Skip empty input
-  local msg="$(tmpgen)" ; mv "${input}" "${msg}"
+  local msg="$(tmpgen)" recipID="all"
+  local first_word="$(cut -z -d ' ' -f 1 "${input}")"
+  if [[ "${first_word}" =~ ^@[[:alnum:]]{6}$ ]]; then
+    recipID="$(grep -Eom1 "[[:alnum:]]*${first_word//@/}$" "${sess_peers}")"
+    cut -z -d ' ' -f 2- "${input}" > "${msg}"
+    grep -xq "${first_word}" "${msg}" && return # Skip empty input
+    flock "${chat}" \
+      cat <(echo "Sent PM to $(grep "${first_word}" "${peers}") $(date +"%a %H:%M:%S")") <(fold -w 40 "${msg}") <(echo -e \\n) \
+      >> "${chat}"
+  elif [[ -f "${first_word}" ]]; then
+    : # TODO: Add WSL support
+  else  
+    mv "${input}" "${msg}"
+  fi
   (local buffer="$(cat <(echo "${EPOCHSECONDS}") "${msg}" | \
-    gnupg --passphrase "${enc_key}" --pinentry-mode loopback -o- -s -c --cipher-algo AES128 | base64 -w0)"
-  ipfs pubsub pub "${topic}" "${selfID} ${buffer} all"$'\n') &
+    case "${recipID}" in
+      all) gnupg --passphrase "${enc_key}" --pinentry-mode loopback -s -c --cipher-algo AES128;;
+      *) peer_pubkey_nick "${recipID}" >/dev/null ; gnupg --keyring "${peer_kbx}" -s -r "${recipID}" -e;;
+    esac | base64 -w0)"
+  ipfs pubsub pub "${topic}" "${selfID} ${buffer} ${recipID}"$'\n') &
 } &>/dev/null; export -f send
 
 ui(){
@@ -329,10 +345,14 @@ ui(){
   while :;do
     # Dimensions are computed just before calling `dialog` to accomodate for the latest terminal window size changes
     local tty_height="$(tput lines)" tty_width="$(tput cols)"
-    local win3_height=7 win3_width="${tty_width}"
+    local win3_height=10 win3_width="${tty_width}"
     local win12_height="$((tty_height-win3_height-1))" # The -1 gap looks awesome as it demarcates better
     local win2_width="$((tty_width/4))"
     local win1_width="$((tty_width-win2_width))"
+    local input_help="\Zb\Z4Nick: \Zu\Z0${nick}\Zn \Zb\Z4peerID: \Zu\Z0@${selfID:${#selfID}-6:6}\Zn
+\Zb\Z4General-Message:\Z1 Simply type in your text & press Enter or Send\Zn
+\Zb\Z4Fle-sharing:\Z2 Drag-n-drop file or type in its path\Zn
+\Zb\Z4Private-Message:\Z5 Put recipient's @peerID followed by a space before your text or file-path\Zn"
     dialog --keep-tite \
       --title "ipfs-chat-room: ${room}" --begin 0 0 --tailboxbg "${chat}" "${win12_height}" "${win1_width}" \
       --and-widget \
@@ -342,7 +362,7 @@ ui(){
       --ok-label "Send" --cancel-label "Clear" \
       --extra-button --extra-label "Inspect chat" \
       --help-button --help-label "Inspect peers" \
-      --inputbox '\Zb\Z1Type your message here or drag-n-drop file to share\Zn' 0 "${win3_width}" \
+      --inputbox "${input_help}" "${win3_height}" "${win3_width}" \
       2> "${input}"
       local exit_code=$?
       case "${exit_code}" in
