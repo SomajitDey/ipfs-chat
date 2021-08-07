@@ -2,7 +2,7 @@
 # Details: See info and usage functions below
 # Warning: This code closes all background processes in the current terminal session on exit # TODO:
 
-export version="0.1.0 (alpha)"
+export version="0.1.1 (alpha)"
 
 info(){
   # Brief: Info about ipfs-chat
@@ -170,7 +170,7 @@ config(){
   tmpgen(){ mktemp "${tmpdir}/.XXXXX";}; export -f tmpgen
 
   export chat="${chat:-"${tmpdir}/chat"}" peers="${tmpdir}/peers" input="${tmpdir}/input"
-  :>"${chat}"; echo "Discovering...">"${peers}"; :>"${input}" # Clear files: Redirected no-op
+  :>"${chat}"; :>"${peers}"; :>"${input}" # Clear files: Redirected no-op
 
   export cb_wd="${tmpdir}/chatbox.width" # Chatbox width
   lwrap(){
@@ -290,7 +290,7 @@ pubsub_conn(){
   done < <(ipfs pubsub sub "${broadcast}" | grep --line-buffered -x '[[:alnum:]/.:-]*')
 } &>"${tmpdir}/pubsub_conn.log"; export -f pubsub_conn
 
-pubsub_conn &
+echo "Status: Launching peer-discovery over pubsub..." >&2; pubsub_conn &
 
 con_cull(){
   # Brief: Cull all connections except those in the file provided as argument or cache, & the connection to relay (if any)
@@ -316,8 +316,10 @@ peering_daemon(){
     sort -u <(ipfs pubsub peers "${topic}") <(timeout 5 ipfs dht findprovs "${nonce}") > "${peerID_list}" # Peer discovery. TODO: Need a slower one?
     for peerID in $(cat "${peerID_list}"); do # Connecting to peers and importing their pubkeys
       (cache_peer "${peerID}"
-      peer_nick="$(peer_pubkey_nick -n "${peerID}")" && \
-        flock "${buffer}" echo "${peer_nick} @${peerID:${#peerID}-6:6}" >> "${buffer}")& # Non-blocking. Notice the nocache flag -n forcing IPNS update
+      peer_nick="$(peer_pubkey_nick -n "${peerID}")" || exit 1
+      local peer_buff="${peer_nick} @${peerID:${#peerID}-6:6}"
+      grep -xq "${peer_buff}" "${peers}" || flock "${peers}" echo "${peer_buff}" >> "${peers}"
+      flock "${buffer}" echo "${peer_buff}" >> "${buffer}")& # Non-blocking. Notice the nocache flag -n forcing IPNS update
       local dht_ops_pid+=($!)
     done
     wait ${dht_ops_pid[@]} # Wait till all DHT operations are complete
@@ -327,7 +329,7 @@ peering_daemon(){
   done  
 } &>"${tmpdir}/peering_daemon.log"; export -f peering_daemon
 
-peering_daemon &
+echo "Status: Launching peer-discovery over DHT..." >&2; peering_daemon &
 
 send(){
   # Brief: Encrypt and sign user's msg & publish to pubsub
