@@ -132,7 +132,6 @@ WAN-only and LAN-only modes are available (see [Usage](#usage)) to further optim
 
 1. Secure file sharing. Files to be shared can simply be dragged and dropped in the text-input area. Support for WSL. Download limit (byte size *int*) can be specified with option `-D` to control bandwidth consumption - the user would be prompted before larger files downloads. `-D 0` : prompt always; `-D n` : prompt before downloading files larger than *n* bytes; `-D -n` : prompt never.
 2. Using Argon2 for more security (See [Security](#security)).
-3. Private messages: To PM a peer simply prefix your message with @nick(peer ID).
 4. Command-line option for manual update: `-u`. Try auto-update in background always and prompt user when new update is available.
 5. Detect and block malicious peers. All direct connections to blocked peers are culled. Users can also block (and unblock later) specific nicks (regex pattern), peer IDs. While blocking users can opt for - 1. Block permanently; 2. For present session only. **TBD**: News of this blocking (who blocked whom and when) may or may not be published over pubsub for other peers to see and decide for themselves.
 9. Secure directory transfer
