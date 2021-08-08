@@ -59,14 +59,39 @@ dep_check(){
 dep_check
 
 update(){
-  # Usage: update [git-branch]
-  (local tmp="$(mktemp /tmp/XXXXX.ipfs-chat.update)" branch="${1:-main}"
-  trap "rm -f ${tmp}" exit # Subshell is used just so that this trap can never mess up the main trap set in `config`
-  local url="https://raw.githubusercontent.com/SomajitDey/ipfs-chat/${branch}/ipfs-chat"
-  timeout 4 curl -sfNL -o "${tmp}" "${url}" || exit "${?}"
-  chmod +x "${tmp}" || exit 1
-  mv -f "${tmp}" "${BASH_SOURCE}" || sudo mv -f "${tmp}" "${BASH_SOURCE}")
-} &>/dev/null; export -f update
+  # Usage: update [-s <update-from-file-path>] [-d <download-to-file-path>] [git-branch]
+  # Note: If -d, it only downloads the latest version to the given location, doesn't update
+  # Note: If -s, it only updates from the given source
+  local OPTIND=1 opt cli_opt source dest
+  while getopts s:d: opt; do
+    case "${opt}" in
+      s) cli_opt="${opt}"; source="${OPTARG}";;
+      d) cli_opt="${opt}"; dest="${OPTARG}";;
+    esac
+  done
+  local branch="${!OPTIND}"
+  local url="https://raw.githubusercontent.com/SomajitDey/ipfs-chat/${branch:=main}/ipfs-chat"
+  local tmp="$(mktemp)" # Using /tmp instead of tmpdir below as tmpdir won't exist for `ipfs-chat -u`
+  trap "rm -f ${tmp}" return
+  case "${cli_opt}" in
+    s)
+      [[ -x "${source}" ]] || return 1
+      mv -f "${source}" "${BASH_SOURCE}" 2>/dev/null || sudo mv -f "${source}" "${BASH_SOURCE}" && \
+        echo "Update: Updated to v$(${BASH_SOURCE} -v)"
+      ;;
+    d) 
+      if timeout 4 curl -sfNL -o "${tmp}" "${url}"; then 
+        chmod +x "${tmp}" && mv "${tmp}" "${dest}" # Atomic update
+      else
+        echo "Error: Failed to update. Check internet connection."
+        return 1
+      fi
+      ;;
+    *) 
+      update -d "${tmp}" "${branch}" && update -s "${tmp}"
+      ;;
+  esac
+} >&2; export -f update
 
 parse_cmdline(){
   local opt OPTIND=1
@@ -82,8 +107,7 @@ parse_cmdline(){
       o) export chat="${OPTARG}";;
       v) echo "${version}"; exit;;
       b) export disable_bandwidth_metrics="false";;
-      u) update && echo "Update: Updated to v$(${BASH_SOURCE} -v)" >&2 || \
-          echo "Error: Failed to update. Check internet connection." >&2; exit "${?}";;
+      u) update; exit "${?}";;
       h|*) usage;;
     esac
   done
@@ -92,8 +116,6 @@ parse_cmdline(){
 }; export -f parse_cmdline
 
 parse_cmdline "$@"
-
-[[ "${connect_mode}" != LAN ]] && update &
 
 info
 
@@ -189,6 +211,9 @@ config(){
 
   export chat="${chat:-"${tmpdir}/chat"}" peers="${tmpdir}/peers" input="${tmpdir}/input"
   :>"${chat}"; :>"${peers}"; :>"${input}" # Clear files: Redirected no-op
+
+  export code="${tmpdir}/latest_version"
+  [[ "${connect_mode}" != LAN ]] && update -d "${code}" &>/dev/null &
 
   export cb_wd="${tmpdir}/chatbox.width" # Chatbox width
   lwrap(){
@@ -421,6 +446,11 @@ ui(){
 echo "Status: Launching UI...(If it takes a long time to open, try pressing Enter)" >&2; ui
 
 [[ -v disable_bandwidth_metrics ]] && echo "Stats: $(ipfs stats bw | head -n3)" >&2
+
+if [[ -x "${code}" ]] && [[ "$(${code} -v 2>/dev/null)" != "${version}" ]]; then
+  echo "Status: Updating... This may require sudo password" >&2
+  update -s "${code}"
+fi
 
 echo "Status: Exiting..." >&2
 
