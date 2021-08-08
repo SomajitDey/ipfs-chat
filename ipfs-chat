@@ -20,6 +20,7 @@ usage(){
   echo -e "\nUsage: ipfs-chat [-n <nick>] [-r <room>] [-d <file-download-dir>] [-c <ipfs-repo-path>] [-o <chat-log-path>] [-w | -l]"
   echo -e "\nNote: -w or -W implies WAN-only connection; -l|-L is LAN-only; To have both WAN & LAN, don't use any of these flags"
   echo -e "\nVersion: ipfs-chat -v"
+  echo -e "\nUpdate: ipfs-chat -u"
   echo -e "\nGenerate random room name: ipfs-chat -g"
   echo ; exit 1
 } >&2; export -f usage
@@ -54,9 +55,21 @@ dep_check(){
   [[ -v quit ]] && exit 1
 } >&2; export -f dep_check
 
+dep_check
+
+update(){
+  # Usage: update [git-branch]
+  (local tmp="$(mktemp /tmp/XXXXX.ipfs-chat.update)" branch="${1:-main}"
+  trap "rm -f ${tmp}" exit # Subshell is used just so that this trap can never mess up the main trap set in `config`
+  local url="https://raw.githubusercontent.com/SomajitDey/ipfs-chat/${branch}/ipfs-chat"
+  timeout 4 curl -sfNL -o "${tmp}" "${url}" || exit "${?}"
+  chmod +x "${tmp}" || exit 1
+  mv -f "${tmp}" "${BASH_SOURCE}" || sudo mv -f "${tmp}" "${BASH_SOURCE}")
+} &>/dev/null; export -f update
+
 parse_cmdline(){
   local opt OPTIND=1
-  while getopts n:r:d:c:gwWlLo:vbh opt;do
+  while getopts n:r:d:c:gwWlLo:vbuh opt;do
     case "${opt}" in
       n) nick="${OPTARG}";;
       r) room="${OPTARG}";;
@@ -68,6 +81,8 @@ parse_cmdline(){
       o) export chat="${OPTARG}";;
       v) echo "${version}"; exit;;
       b) export disable_bandwidth_metrics="false";;
+      u) update && echo "Update: Updated to v$(${BASH_SOURCE} -v)" >&2 || \
+          echo "Error: Failed to update. Check internet connection." >&2; exit "${?}";;
       h|*) usage;;
     esac
   done
@@ -76,6 +91,8 @@ parse_cmdline(){
 }; export -f parse_cmdline
 
 parse_cmdline "$@"
+
+[[ "${connect_mode}" != LAN ]] && update &
 
 info
 

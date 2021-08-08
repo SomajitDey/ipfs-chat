@@ -15,6 +15,7 @@
 ipfs-chat -r <room> -n <nick> -d <download directory> -c <ipfs repo> -o <chat log> -wWlL
 ipfs-chat -g # Generating a random room name, for when your brain can't do it
 ipfs-chat -v # Version
+ipfs-chat -u # Update
 ipfs-chat -h # Help
 ```
 
@@ -29,6 +30,8 @@ All command-line options/flags are optional. Unobvious options are explained bel
 `-w` or `-W` denotes WAN-only mode. Local discovery is disabled. Everything happens over internet only. Uses WAN-DHT.
 
 `-l` or `-L` denotes LAN-only mode. Peers are discovered only locally, no connection to the IPFS public network is formed over the internet (no bootstrap node, uses LAN-DHT). Saves resources when all chatroom peers are known to be present across LAN. Launches `ipfs-chat` faster when not connected to the internet.
+
+`-u` does a manual update of `ipfs-chat`. This option is not very necessary as `ipfs-chat` auto-updates whenever there is internet connection and it is not running in LAN-only mode.
 
 **Defaults**:
 
