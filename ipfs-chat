@@ -2,7 +2,7 @@
 # Details: See info and usage functions below
 # Warning: This code closes all background processes in the current terminal session on exit # TODO:
 
-export version="0.1.1 (alpha)"
+export version="0.2.0 (alpha)"
 
 info(){
   # Brief: Info about ipfs-chat
@@ -300,17 +300,16 @@ con_cull(){
   for multiaddress in $(ipfs swarm peers); do
     peerID="${multiaddress##*/}"
     grep -q "${peerID}" "${peerID_list}" || (echo "${curr_self_address}" | grep -q "${peerID}") || \
-      ipfs swarm disconnect "/p2p/${peerID}" &>/dev/null
+      ipfs swarm disconnect "/p2p/${peerID}"
   done
 } &>/dev/null; export -f con_cull
 
 peering_daemon(){
   # Brief: Discover & connect to chat-peers & announce self for others to discover - at regular intervals
   local peerID peer_nick peerID_list="$(tmpgen)" buffer="$(tmpgen)"
-  local interval=30
   while ipfs swarm peers &>/dev/null;do # Do as long as IPFS daemon is alive
     local dht_ops_pid=() # Stores pid's of background DHT operations executing in the current pass
-    local timestamp="${EPOCHSECONDS}"
+    local timestamp="${EPOCHSECONDS}" # Current Unix time
     ipfs pubsub pub "${broadcast}" "$(ipfs id "${selfID}" -f="<addrs>\n")" & # Announce own multiaddresses
     local nonce="$(hmac "${room}" "$((timestamp/120))" | ipfs add -Q --pin=false)" # Announce time based nonce
     sort -u <(ipfs pubsub peers "${topic}") <(timeout 5 ipfs dht findprovs "${nonce}") > "${peerID_list}" # Peer discovery. TODO: Need a slower one?
@@ -325,7 +324,7 @@ peering_daemon(){
     wait ${dht_ops_pid[@]} # Wait till all DHT operations are complete
     sort -o "${buffer}" "${buffer}" && mv "${buffer}" "${peers}" # In-place sort followed by atomic move
     con_cull # Need for DHT is over for now. So, let's cull unnecessary connections to reduce bandwidth usage.
-    sleep "$((interval-EPOCHSECONDS+timestamp))" #2>/dev/null # Redirection for when the sleep time is negative
+    sleep "$((30-EPOCHSECONDS+timestamp))" 2>/dev/null # TBD: 30s or less? Redirection for when the sleep time is negative
   done  
 } &>"${tmpdir}/peering_daemon.log"; export -f peering_daemon
 
