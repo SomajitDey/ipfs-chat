@@ -15,6 +15,7 @@
 ipfs-chat -r <room> -n <nick> -d <download directory> -c <ipfs repo> -o <chat log> -wWlL
 ipfs-chat -g # Generating a random room name, for when your brain can't do it
 ipfs-chat -v # Version
+ipfs-chat -u # Update
 ipfs-chat -h # Help
 ```
 
@@ -29,6 +30,8 @@ All command-line options/flags are optional. Unobvious options are explained bel
 `-w` or `-W` denotes WAN-only mode. Local discovery is disabled. Everything happens over internet only. Uses WAN-DHT.
 
 `-l` or `-L` denotes LAN-only mode. Peers are discovered only locally, no connection to the IPFS public network is formed over the internet (no bootstrap node, uses LAN-DHT). Saves resources when all chatroom peers are known to be present across LAN. Launches `ipfs-chat` faster when not connected to the internet.
+
+`-u` does a manual update of `ipfs-chat`. This option is not very necessary as `ipfs-chat` auto-updates whenever there is internet connection and it is not running in LAN-only mode.
 
 **Defaults**:
 
@@ -65,6 +68,22 @@ Multiple instances of `ipfs-chat` may be run for accessing different chatrooms c
 ## Snapshot
 
 ![ipfs-chat_snapshot](./screenshot.png)
+
+## Testing
+
+You can test `ipfs-chat` by running multiple instances on your computer, or running one instance on your machine and another instance on another computer or a free cloud shell such as [Google's](https://cloud.google.com/shell). Simply use different nicknames and join the same chatroom. Example: Connect to the internet and do the following.
+
+```shell
+ipfs-chat -b -c '/tmp/ipfs-chat' -n 'partner' # In one terminal
+ipfs-chat -b # In another terminal, computer or cloud shell
+# -b above enables bandwidth stats. Drop it if you are not interested in those stats.
+```
+
+Test further. Disconnect from the internet and run the above two instances on your local machine or two LAN-connected hosts with the `-l` or `-L` flag.
+
+## Changing terminal window size
+
+Should you ever need to change the size of the terminal `ipfs-chat` is running on, you would find that it messes up the screen. Don't panic. Simply press ENTER or any of the buttons on the `ipfs-chat` screen and everything will be fixed.
 
 ## Peer discovery
 

@@ -2,7 +2,7 @@
 # Details: See info and usage functions below
 # Warning: This code closes all background processes in the current terminal session on exit # TODO:
 
-export version="0.1.1 (alpha)"
+export version="0.1.2 (alpha)"
 
 info(){
   # Brief: Info about ipfs-chat
@@ -20,6 +20,7 @@ usage(){
   echo -e "\nUsage: ipfs-chat [-n <nick>] [-r <room>] [-d <file-download-dir>] [-c <ipfs-repo-path>] [-o <chat-log-path>] [-w | -l]"
   echo -e "\nNote: -w or -W implies WAN-only connection; -l|-L is LAN-only; To have both WAN & LAN, don't use any of these flags"
   echo -e "\nVersion: ipfs-chat -v"
+  echo -e "\nUpdate: ipfs-chat -u"
   echo -e "\nGenerate random room name: ipfs-chat -g"
   echo ; exit 1
 } >&2; export -f usage
@@ -37,10 +38,11 @@ dep_check(){
   # Brief: Check major dependencies
   local ipfs_version quit
   if ipfs_version=$(ipfs version --number 2>/dev/null); then
-    [[ "${ipfs_version}" > 0.9.0 ]] || \
-    { echo -e "Required: go-ipfs version > 0.9.0\nSuggestion: ipfs update install latest\n"; quit="yes";}
+    local req_ipfs_ver=0.9.1 # Minimum ipfs-cli version required
+    [[ "$(echo -e "${ipfs_version}\n${req_ipfs_ver}" | sort -V | head -n1)" == "${req_ipfs_ver}" ]] || \
+      { echo -e "Required: go-ipfs-cli version >= ${req_ipfs_ver}\nSuggestion: ipfs update install latest\n"; quit="yes";}
   else
-    echo -e "Required: go-ipfs\nSource: https://docs.ipfs.io/install/command-line/#linux\n"
+    echo -e "Required: go-ipfs-cli\nSource: https://docs.ipfs.io/install/command-line/#linux\n"
     quit="yes"
   fi
   if ! command -v dialog &>/dev/null; then
@@ -51,12 +53,53 @@ dep_check(){
     echo -e "Required: setsid\nSource: Native package repository\n"
     quit="yes"
   fi
+  if ! command -v curl &>/dev/null; then
+    echo -e "Required: curl\nSource: Native package repository\n"
+    quit="yes"
+  fi
   [[ -v quit ]] && exit 1
 } >&2; export -f dep_check
 
+dep_check
+
+update(){
+  # Usage: update [-s <update-from-file-path>] [-d <download-to-file-path>] [git-branch]
+  # Note: If -d, it only downloads the latest version to the given location, doesn't update
+  # Note: If -s, it only updates from the given source
+  local OPTIND=1 opt cli_opt source dest
+  while getopts s:d: opt; do
+    case "${opt}" in
+      s) cli_opt="${opt}"; source="${OPTARG}";;
+      d) cli_opt="${opt}"; dest="${OPTARG}";;
+    esac
+  done
+  local branch="${!OPTIND}"
+  local url="https://raw.githubusercontent.com/SomajitDey/ipfs-chat/${branch:=main}/ipfs-chat"
+  local tmp="$(mktemp)" # Using /tmp instead of tmpdir below as tmpdir won't exist for `ipfs-chat -u`
+  trap "rm -f ${tmp}" return
+  case "${cli_opt}" in
+    s)
+      [[ -x "${source}" ]] || return 1
+      mv -f "${source}" "${BASH_SOURCE}" 2>/dev/null || sudo mv -f "${source}" "${BASH_SOURCE}" && \
+        echo "Update: Updated to v$(${BASH_SOURCE} -v)"
+      ;;
+    d) 
+      if timeout 4 curl -sfNL -o "${tmp}" "${url}"; then 
+        chmod +x "${tmp}" && mv "${tmp}" "${dest}" # Atomic update
+      else
+        echo "Error: Failed to update. Check internet connection."
+        return 1
+      fi
+      ;;
+    *) 
+      update -d "${tmp}" "${branch}" && update -s "${tmp}"
+      ;;
+  esac
+} >&2; export -f update
+
 parse_cmdline(){
   local opt OPTIND=1
-  while getopts n:r:d:c:gwWlLo:vbh opt;do
+  while getopts n:r:d:c:gwWlLo:vbuh opt;do
     case "${opt}" in
       n) nick="${OPTARG}";;
       r) room="${OPTARG}";;
@@ -68,6 +111,7 @@ parse_cmdline(){
       o) export chat="${OPTARG}";;
       v) echo "${version}"; exit;;
       b) export disable_bandwidth_metrics="false";;
+      u) update; exit "${?}";;
       h|*) usage;;
     esac
   done
@@ -171,6 +215,9 @@ config(){
 
   export chat="${chat:-"${tmpdir}/chat"}" peers="${tmpdir}/peers" input="${tmpdir}/input"
   :>"${chat}"; :>"${peers}"; :>"${input}" # Clear files: Redirected no-op
+
+  export code="${tmpdir}/latest_version"
+  [[ "${connect_mode}" != LAN ]] && update -d "${code}" &>/dev/null &
 
   export cb_wd="${tmpdir}/chatbox.width" # Chatbox width
   lwrap(){
@@ -300,17 +347,16 @@ con_cull(){
   for multiaddress in $(ipfs swarm peers); do
     peerID="${multiaddress##*/}"
     grep -q "${peerID}" "${peerID_list}" || (echo "${curr_self_address}" | grep -q "${peerID}") || \
-      ipfs swarm disconnect "/p2p/${peerID}" &>/dev/null
+      ipfs swarm disconnect "/p2p/${peerID}"
   done
 } &>/dev/null; export -f con_cull
 
 peering_daemon(){
   # Brief: Discover & connect to chat-peers & announce self for others to discover - at regular intervals
   local peerID peer_nick peerID_list="$(tmpgen)" buffer="$(tmpgen)"
-  local interval=30
   while ipfs swarm peers &>/dev/null;do # Do as long as IPFS daemon is alive
     local dht_ops_pid=() # Stores pid's of background DHT operations executing in the current pass
-    local timestamp="${EPOCHSECONDS}"
+    local timestamp="${EPOCHSECONDS}" # Current Unix time
     ipfs pubsub pub "${broadcast}" "$(ipfs id "${selfID}" -f="<addrs>\n")" & # Announce own multiaddresses
     local nonce="$(hmac "${room}" "$((timestamp/120))" | ipfs add -Q --pin=false)" # Announce time based nonce
     sort -u <(ipfs pubsub peers "${topic}") <(timeout 5 ipfs dht findprovs "${nonce}") > "${peerID_list}" # Peer discovery. TODO: Need a slower one?
@@ -325,7 +371,7 @@ peering_daemon(){
     wait ${dht_ops_pid[@]} # Wait till all DHT operations are complete
     sort -o "${buffer}" "${buffer}" && mv "${buffer}" "${peers}" # In-place sort followed by atomic move
     con_cull # Need for DHT is over for now. So, let's cull unnecessary connections to reduce bandwidth usage.
-    sleep "$((interval-EPOCHSECONDS+timestamp))" #2>/dev/null # Redirection for when the sleep time is negative
+    sleep "$((30-EPOCHSECONDS+timestamp))" 2>/dev/null # TBD: 30s or less? Redirection for when the sleep time is negative
   done  
 } &>"${tmpdir}/peering_daemon.log"; export -f peering_daemon
 
@@ -404,6 +450,11 @@ ui(){
 echo "Status: Launching UI...(If it takes a long time to open, try pressing Enter)" >&2; ui
 
 [[ -v disable_bandwidth_metrics ]] && echo "Stats: $(ipfs stats bw | head -n3)" >&2
+
+if [[ -x "${code}" ]] && [[ "$(${code} -v 2>/dev/null)" != "${version}" ]]; then
+  echo "Status: Updating... This may require sudo password" >&2
+  update -s "${code}"
+fi
 
 echo "Status: Exiting..." >&2
 
