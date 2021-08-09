@@ -130,7 +130,7 @@ info
 ipfs_config(){
   # Brief: Configure IPFS node
   # Note: Use random ports for everything so that multiple IPFS nodes can coexist on the same machine
-  # Note: Most configs below are for reducing bandwidth and CPU usage
+  # Note: Most configs below are for reducing bandwidth/CPU/disk usage
   echo -ne "Status: Configuring IPFS node...\r"
   if ! ipfs id &>/dev/null; then
     (ipfs init --profile lowpower && ipfs config profile apply randomports) >/dev/null || \
@@ -143,13 +143,22 @@ ipfs_config(){
     ipfs config Routing.Type dhtclient
     ipfs config Swarm.ConnMgr.Type none
     ipfs config --bool Swarm.EnableRelayHop false
+    ipfs config --json Experimental.FilestoreEnabled true
   fi
 
   export sess_peers="${IPFS_PATH}/session_peers" # This file caches all ipfs-chat peers (multiaddresses) seen when node is online
+  export sess_uplds="${IPFS_PATH}/session_uploads" # Maps SHA1 hash of file to CID of its hash-encrypted object
+
+  export global_fs="${HOME}/.filestore-ipfs-chat" # For multinode deduplication. UL files named after SHA1, DL files after CID
+  mkdir -p "${global_fs}"; local global_fs_MB="$(du -BM "${global_fs}" | awk '{print $1}' | tr -d M)"
+  # Cleanup global cache when disk usage exceeds 1 GB
+  if ((global_fs_MB > 1024)); then
+    flock -n "${global_fs}" rm -rf "${global_fs}"/*
+  fi
   
   # Repo cleanup when no other instance is running; i.e. node is offline
   if ! ipfs swarm peers; then
-    rm -f "${sess_peers}"
+    rm -f "${sess_peers}" "${sess_uplds}"
     ipfs pin ls --type all | cut -d' ' -f1 | xargs -n1 ipfs pin rm
     ipfs repo gc
   fi &>/dev/null
@@ -194,7 +203,7 @@ ipfs_config(){
   local gateway_port="$(pscan "${API_port}")"; ipfs config Addresses.Gateway "/ip4/127.0.0.1/tcp/${gateway_port:=8080}"
 
   until ipfs swarm peers;do
-    setsid --fork ipfs daemon --enable-pubsub-experiment --enable-namesys-pubsub
+    flock -s "${global_fs}" setsid --fork ipfs daemon --enable-pubsub-experiment --enable-namesys-pubsub
     # setsid makes sure daemon runs in a separate session, such that `pkill -s 0` does not kill it.
     sleep 0.1
   done &>/dev/null
@@ -321,7 +330,7 @@ subscriber_daemon(){
     esac < <(echo -n "${readbuff}" | base64 -d) > "${buffer}" 2> "${gpg_stderr}" || exit 1
     grep -iq "Good signature from \"${peerID}\"" "${gpg_stderr}" || exit 1 # Verify authenticity/signature
     grep -xq '[[:print:]]*' "${buffer}" || exit 1 # Check msg is text only to avoid spam
-    read timestamp CID < <(head -n1 "${buffer}" | grep -xE '[[:digit:]]*([[:blank:]][[:alnum:]]*)?')
+    read timestamp CID < <(head -n1 "${buffer}" | grep -xE '[[:digit:]]*[[:blank:]]([[:alnum:]]*[[:blank:]][[:alnum:]]*)?')
     timestamp="$(date -d @${timestamp} +"%a %H:%M:%S")" || exit 1
     prefix="${prefix}${sender} @${peerID:${#peerID}-6:6} ${timestamp} -- "
     flock "${chat}" cat <(echo -n "${prefix}") <(tail -n+2 "${buffer}") <(echo -e \\n) | lwrap >> "${chat}")&
@@ -400,8 +409,11 @@ file_pack(){
     return 1    
   fi
   local enc_hash="$(sha1sum -b "${path}" | cut -d' ' -f1 | xxd -r -p | base64 -w 0 | tr -d =)"
-  echo -n "${enc_hash} "
-  openssl enc -aes128 -pass pass:"${enc_hash}" -nosalt -a -A -in "${path}" | ipfs add -w --stdin-name="${filename}" -Q
+  if ! grep -m1 "${enc_hash}" "${sess_uplds}"; then
+    local cache="${global_fs}/${enc_hash}"
+    [[ -f "${cache}" ]] || openssl enc -aes128 -pass pass:"${enc_hash}" -nosalt -a -A -in "${path}" -out "${cache}"
+    echo "${enc_hash} $(ipfs add --nocopy --fscache -Q "${cache}")" | flock "${sess_uplds}" tee -a "${sess_uplds}"
+  fi
   # Openssl with -nosalt instead of GPG, because GPG or Openssl -salt encryption is time dependent
 } 2>/dev/null; export -f file_pack
 
