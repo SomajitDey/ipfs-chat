@@ -2,7 +2,7 @@
 # Details: See info and usage functions below
 # Warning: This code closes all background processes in the current terminal session on exit # TODO:
 
-export version="0.1.2 (alpha)"
+export version="0.2.0 (alpha)"
 
 info(){
   # Brief: Info about ipfs-chat
@@ -28,7 +28,7 @@ usage(){
 hmac(){
   # Usage: hmac <salt> <string>
   # Output: base64
-  sha1(){ sha1sum < <(echo -n "${1}") | cut -d ' ' -f 1;} # Usage: sha1 <string>
+  sha1(){ sha1sum <(echo -n "${1}") | cut -d ' ' -f 1;} # Usage: sha1 <string>
   local key="$(sha1 "${1}")" data="$(sha1 "${2}")"
   echo -n "${data}" | xxd -r -p | openssl dgst -sha1 -mac hmac -macopt hexkey:"${key}" | cut -d ' ' -f 2 | \
     xxd -r -p | base64 -w0 | tr -d = # Deleting last = because base64 encoding 160-bit hmac always gives single =
@@ -371,6 +371,8 @@ peering_daemon(){
     wait ${dht_ops_pid[@]} # Wait till all DHT operations are complete
     sort -o "${buffer}" "${buffer}" && mv "${buffer}" "${peers}" # In-place sort followed by atomic move
     con_cull # Need for DHT is over for now. So, let's cull unnecessary connections to reduce bandwidth usage.
+    ipfs repo gc -q &>/dev/null # To reduce bandwidth at the cost of CPU. Less irrelevant blocks cached => less such blocks provided
+    # Garbage cleaning doesn't delete cached IPNS records that didn't expire
     sleep "$((30-EPOCHSECONDS+timestamp))" 2>/dev/null # TBD: 30s or less? Redirection for when the sleep time is negative
   done  
 } &>"${tmpdir}/peering_daemon.log"; export -f peering_daemon

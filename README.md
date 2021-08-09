@@ -109,6 +109,8 @@ All general messages are encrypted with a symmetric key (AES128) derived from th
 
 All private messages are encrypted with a public key (ECDH/cv25519) belonging to the recipient.
 
+All shared files are encrypted (See [File sharing](#file-sharing)).
+
 The pubsub topics are separate HMAC keys derived from the room name.
 
 Therefore, the public network, that mediates the pubsub and passes the messages along, never knows the actual room name and hence, the encryption key.
@@ -126,6 +128,16 @@ For general messaging, a peer signs its message with its private key and encrypt
 Other peers receive this over pubsub, decrypt the message and verify the signature. If everything is ok, they then display the message in their UI against the sender's nick, peer ID and timestamp.
 
 [IPNS-pubsub](https://github.com/ipfs/go-ipfs/blob/master/docs/experimental-features.md#ipns-pubsub) is enabled to aid in resolving IPNS names as quickly as possible, and reducing the dependence on DHT.
+
+## File sharing
+
+Shared files are encrypted using their SHA1 hash and then added to IPFS. The CID of the added file and the aforementioned encrypting hash are then sent to the chatroom peer(s) in a general or private message.
+
+The receiving peer(s) decrypt the CID and encryption hash, retrieve the encrypted file over IPFS and decrypt the same. (TBD: After decryption, receivers may check the file against the SHA1 hash received).
+
+The purpose of encrypting a file with its own hash is to generate the same encrypted object (i.e. PGP message block) every time the file is shared. This causes deduplication. For example, if A and B share the same file with C, C only has to download the file once. Because of the content-addressability of IPFS, deduplicated objects also would have more providers, increasing availability and improving download time.
+
+**Note**: SHA1 is preferred to other hashes merely for speed. For added security, the SHA1 hash of the file is actually salted, derived as: `cat ${file} <(echo ${salt}) | sha1sum -b | cut -d' ' -f1`.
 
 ## Efficiency
 
