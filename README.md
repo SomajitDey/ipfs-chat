@@ -129,15 +129,17 @@ Other peers receive this over pubsub, decrypt the message and verify the signatu
 
 [IPNS-pubsub](https://github.com/ipfs/go-ipfs/blob/master/docs/experimental-features.md#ipns-pubsub) is enabled to aid in resolving IPNS names as quickly as possible, and reducing the dependence on DHT.
 
-## File sharing
+## File or directory sharing
+
+Directories, when shared, are first archived through `tar` and those archives are shared like regular files.
 
 Shared files are encrypted using their SHA1 hash and then added to IPFS. The CID of the added file and the aforementioned encrypting hash are then sent to the chatroom peer(s) in a general or private message.
 
 The receiving peer(s) decrypt the CID and encryption hash, retrieve the encrypted file over IPFS and decrypt the same. (TBD: After decryption, receivers may check the file against the SHA1 hash received).
 
-The purpose of encrypting a file with its own hash is to generate the same encrypted object (i.e. PGP message block) every time the file is shared. This causes deduplication. For example, if A and B share the same file with C, C only has to download the file once. Because of the content-addressability of IPFS, deduplicated objects also would have more providers, increasing availability and improving download time.
+The purpose of encrypting a file with its own hash is to generate the same output every time the same file is encrypted. This causes deduplication. For example, if A and B encrypt and share the same file with C, C only has to download the file once. Because of the content-addressability of IPFS, deduplicated objects would also have more providers, thus increasing availability and hence improving download time.
 
-**Note**: SHA1 is preferred to other hashes merely for speed. For added security, the SHA1 hash of the file is actually salted, derived as: `cat ${file} <(echo ${salt}) | sha1sum -b | cut -d' ' -f1`.
+**Note**: SHA1 is preferred to other hashes merely for speed. (TBD: For added security, the SHA1 hash of the file may be salted, derived as: `cat ${file} <(echo ${salt}) | sha1sum -b | cut -d' ' -f1`. Cost: The `cat` would add significant overhead for large files).
 
 ## Efficiency
 

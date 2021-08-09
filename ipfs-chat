@@ -57,6 +57,10 @@ dep_check(){
     echo -e "Required: curl\nSource: Native package repository\n"
     quit="yes"
   fi
+  if ! command -v openssl &>/dev/null; then
+    echo -e "Required: openssl\nSource: Native package repository\n"
+    quit="yes"
+  fi
   [[ -v quit ]] && exit 1
 } >&2; export -f dep_check
 
@@ -379,6 +383,28 @@ peering_daemon(){
 
 echo "Status: Launching peer-discovery over DHT..." >&2; peering_daemon &
 
+file_pack(){
+  # Brief: Encrypt file with its salted hash, add to IPFS & output CID and encrypt key
+  # Usage: file_pack <file containing the path of the file to be shared> # This is just for simplicity of `send` code below
+  # This function also replaces the path present in the given file with just the filename
+  local msg="${1}"
+  local path="$(cat "${msg}")" filename
+  if [[ -f "${path}" ]]; then
+    filename="${path##*/}"
+    echo -n "${filename}" > "${msg}"
+  elif [[ -d "${path}" ]]; then
+    local dir="${path}"; path="$(tmpgen)"; tar --create --file="${path}" "${dir}"
+    filename="${path##*/}.tar.gz"
+    echo -n "${filename}" > "${msg}"
+  else
+    return 1    
+  fi
+  local enc_hash="$(sha1sum -b "${path}" | cut -d' ' -f1 | xxd -r -p | base64 -w 0 | tr -d =)"
+  echo -n "${enc_hash} "
+  openssl enc -aes128 -pass pass:"${enc_hash}" -nosalt -a -A -in "${path}" | ipfs add -w --stdin-name="${filename}" -Q
+  # Openssl with -nosalt instead of GPG, because GPG or Openssl -salt encryption is time dependent
+} 2>/dev/null; export -f file_pack
+
 send(){
   # Brief: Encrypt and sign user's msg & publish to pubsub
   [[ -s "${input}" ]] || return # Skip empty input
@@ -390,12 +416,11 @@ send(){
     grep -xq "${first_word}" "${msg}" && return # Skip empty input
     local prefix="PM to $(grep "${first_word}" "${peers}") $(date +"%a %H:%M:%S") -- "
     flock "${chat}" cat <(echo -n "${prefix}") "${msg}" <(echo -e \\n) | lwrap >> "${chat}"
-  elif [[ -f "${first_word}" ]]; then
-    : # TODO: Add WSL support
   else  
     mv "${input}" "${msg}"
   fi
-  (local buffer="$(cat <(echo "${EPOCHSECONDS}") "${msg}" | \
+  (enc_hash_cid="$(file_pack "${msg}")"
+  buffer="$(cat <(echo "${EPOCHSECONDS} ${enc_hash_cid}") "${msg}" | \
     case "${recipID}" in
       all) gnupg --passphrase "${enc_key}" --pinentry-mode loopback -s -c --cipher-algo AES128;;
       *) peer_pubkey_nick "${recipID}" >/dev/null ; gnupg --keyring "${peer_kbx}" -s -r "${recipID}" -e;;
@@ -419,7 +444,7 @@ ui(){
     fi # Conditionality decreases lag between pressing Send and subsequent chatbox update
     local input_help="\Zb\Z4Nick: \Zu\Z0${nick}\Zn \Zb\Z4peerID: \Zu\Z0@${selfID:${#selfID}-6:6}\Zn
 \Zb\Z4General-Message:\Z1 Simply type in your text & press Enter or Send\Zn
-\Zb\Z4Fle-sharing:\Z2 Drag-n-drop file or type in its path\Zn
+\Zb\Z4Fle-sharing:\Z2 Drag-n-drop file or directory, or type in its path\Zn
 \Zb\Z4Private-Message:\Z5 Put recipient's @peerID followed by a space before your text or file-path\Zn"
     dialog --keep-tite \
       --title "ipfs-chat-room: ${room}" --begin 0 0 --tailboxbg "${chat}" "${win12_height}" "${win1_width}" \
