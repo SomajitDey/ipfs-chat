@@ -431,7 +431,6 @@ send(){
     cut -z -d ' ' -f 2- "${input}" > "${msg}"
     grep -xq "${first_word}" "${msg}" && return # Skip empty input
     local prefix="PM to $(grep "${first_word}" "${peers}") $(date +"%a %H:%M:%S") -- "
-    flock "${chat}" cat <(echo -n "${prefix}") "${msg}" <(echo -e \\n) | lwrap >> "${chat}"
   else  
     mv "${input}" "${msg}"
   fi
@@ -441,7 +440,9 @@ send(){
       all) gnupg --passphrase "${enc_key}" --pinentry-mode loopback -s -c --cipher-algo AES128;;
       *) peer_pubkey_nick "${recipID}" >/dev/null ; gnupg --keyring "${peer_kbx}" -s -r "${recipID}" -e;;
     esac | base64 -w0)"
-  ipfs pubsub pub "${topic}" "${selfID} ${buffer} ${recipID}"$'\n') &
+  ipfs pubsub pub "${topic}" "${selfID} ${buffer} ${recipID}"$'\n'
+  [[ -v prefix ]] && flock "${chat}" cat <(echo -n "${prefix}") "${msg}" <(echo -e \\n) | lwrap >> "${chat}"
+  ) &
 } &>/dev/null; export -f send
 
 ui(){
