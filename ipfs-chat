@@ -2,7 +2,7 @@
 # Details: See info and usage functions below
 # Warning: This code closes all background processes in the current terminal session on exit # TODO:
 
-export version="0.1.2 (alpha)"
+export version="0.1.3 (alpha)"
 
 info(){
   # Brief: Info about ipfs-chat
@@ -31,7 +31,9 @@ hmac(){
   sha1(){ sha1sum < <(echo -n "${1}") | cut -d ' ' -f 1;} # Usage: sha1 <string>
   local key="$(sha1 "${1}")" data="$(sha1 "${2}")"
   echo -n "${data}" | xxd -r -p | openssl dgst -sha1 -mac hmac -macopt hexkey:"${key}" | cut -d ' ' -f 2 | \
-    xxd -r -p | base64 -w0 | tr -d = # Deleting last = because base64 encoding 160-bit hmac always gives single =
+    xxd -r -p | base64 -w0 | tr -d = | tr / _
+  # Deleting last = because base64 encoding 160-bit hmac always gives single =, hence redundant
+  # Substituting / with _ because / messes up using hmac outputs as directory or filenames
 }; export -f hmac
 
 dep_check(){
