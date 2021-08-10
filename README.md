@@ -1,13 +1,36 @@
 # IPFS-Chat
 
-1. Real-time peer-to-peer messaging using [IPFS pubsub](https://github.com/ipfs/go-ipfs/blob/master/docs/experimental-features.md#ipfs-pubsub). Works over both internet and LAN. In-chat file-sharing is not implemented yet but will be soon.
-2. The usual *Create Alias/Nick* + *Create/Join room* workflow (akin to [IRC](https://en.wikipedia.org/wiki/Internet_Relay_Chat)). Additionally, any online chatroom peer may be sent private messages (PM) that cannot be seen by the other online peers.
-3. Peers are discovered using [DHT](https://docs.ipfs.io/concepts/dht/), [pubsub](https://docs.libp2p.io/concepts/publish-subscribe/) and [mDNS](https://en.wikipedia.org/wiki/Multicast_DNS) (See [Peer discovery](#peer-discovery)). No need for any rendezvous server.
-4. Chat-messages are authenticated and end-to-end encrypted (See [Security](#security)).
-5. Very basic terminal-based UI without any eye candy.
-6. Written entirely in [Bash](https://www.gnu.org/software/bash/manual/bash.html); just a single shell-script. Apart from [go-ipfs](https://docs.ipfs.io/install/command-line/#official-distributions) and possibly `argon2`, depends only on standard GNU/Linux tools and tools that can be easily downloaded from the native package repository.
+1. Real-time, secure, peer-to-peer messaging using [IPFS pubsub](https://github.com/ipfs/go-ipfs/blob/master/docs/experimental-features.md#ipfs-pubsub). Allows in-chat file/directory sharing and private messaging. Works over both internet and LAN. Built-in NAT/Firewall traversal using [IPFS autorelay](https://github.com/ipfs/go-ipfs/blob/master/docs/experimental-features.md#autorelay).
+2. Very basic terminal-based UI without any eye candy.
+3. The usual *Create Alias/Nick* + *Create/Join room* workflow (akin to [IRC](https://en.wikipedia.org/wiki/Internet_Relay_Chat)).
+4. Fully distributed - serverless/brokerless. Peers are discovered using [DHT](https://docs.ipfs.io/concepts/dht/), [pubsub](https://docs.libp2p.io/concepts/publish-subscribe/) and [mDNS](https://en.wikipedia.org/wiki/Multicast_DNS) (See [Peer discovery](#peer-discovery)). No need for any rendezvous server. Without any central server(s), `ipfs-chat` cannot be censored/blocked.
+5. Chat-messages are authenticated and end-to-end encrypted (See [Security](#security)). Shared files/directories are encrypted too.
+6. Developed with bandwidth, CPU and disk usage efficiency in mind.
+7. Written entirely in [Bash](https://www.gnu.org/software/bash/manual/bash.html); just a single shell-script. Apart from [go-ipfs](https://docs.ipfs.io/install/command-line/#official-distributions) and possibly `argon2`, depends only on standard GNU/Linux tools and tools that can be easily downloaded from the native package repository.
 
 ***Keywords*:** p2p; distributed; server-less; broker-less; TUI; secure; texting; file-sharing; ipfs; pubsub; privacy
+
+## Installation
+
+Download:
+
+```shell
+git clone --depth 1 --no-tags https://github.com/SomajitDey/ipfs-chat; cd ipfs-chat
+# Or
+wget https://raw.githubusercontent.com/SomajitDey/ipfs-chat/main/ipfs-chat \
+&& chmod +x ./ipfs-chat
+```
+
+Install:
+
+```bash
+sudo mv ./ipfs-chat /usr/local/bin
+# Or if you don't have sudo priviledge:
+mkdir -p ~/.bin; mv ./ipfs-chat ~/.bin; export PATH="${PATH}:${HOME}/.bin" >> ~/.bashrc
+# Then restart bash/reopen the terminal
+```
+
+Do you want an auto-install feature, such as `./ipfs-chat -i`? If so, please [post](#bug-reports-and-feedbacks) a feature-request.
 
 ## Usage
 
@@ -109,7 +132,7 @@ All general messages are encrypted with a symmetric key (AES128) derived from th
 
 All private messages are encrypted with a public key (ECDH/cv25519) belonging to the recipient.
 
-All shared files are encrypted (See [File sharing](#file-sharing)).
+All shared files and directories are encrypted (See [File sharing](#file-sharing)).
 
 The pubsub topics are separate HMAC keys derived from the room name.
 
@@ -131,13 +154,17 @@ Other peers receive this over pubsub, decrypt the message and verify the signatu
 
 ## File or directory sharing
 
-Directories, when shared, are first archived through `tar` and those archives are shared like regular files.
+Directories, when shared, are first archived through `tar` and those archives then shared like regular files.
 
 Shared files are encrypted using their SHA1 hash and then added to IPFS. The CID of the added file and the aforementioned encrypting hash are then sent to the chatroom peer(s) in a general or private message.
 
 The receiving peer(s) decrypt the CID and encryption hash, retrieve the encrypted file over IPFS and decrypt the same. (TBD: After decryption, receivers may check the file against the SHA1 hash received).
 
 The purpose of encrypting a file with its own hash is to generate the same output every time the same file is encrypted. This causes deduplication. For example, if A and B encrypt and share the same file with C, C only has to download the file once. Because of the content-addressability of IPFS, deduplicated objects would also have more providers, thus increasing availability and hence improving download time.
+
+To minimize disk usage by the downloaded and decrypted files, `git`-like content addressing is used. All downloaded and decrypted files remain saved in a global filestore, until garbage-cleaned. The download directory merely contains hard links to these files. The global filestore is GCd only when it exceeds a certain size (TBD:).
+
+Encrypting large files is time-consuming. Files once encrypted are therefore cached in the global filestore. Also, adding large encrypted files to IPFS is time-consuming. To avoid encrypting and adding the same file again and again, as long as the IPFS node is online, for every shared file, it maintains a map of the file-hash to its encrypted file CID.
 
 **Note**: SHA1 is preferred to other hashes merely for speed. (TBD: For added security, the SHA1 hash of the file may be salted, derived as: `cat ${file} <(echo ${salt}) | sha1sum -b | cut -d' ' -f1`. Cost: The `cat` would add significant overhead for large files).
 
@@ -151,9 +178,17 @@ Connections to the chatroom peers are never closed.
 
 To achieve this, `ipfs-chat` uses its own connection manager and does not use the [basic connection manager](https://github.com/ipfs/go-ipfs/blob/master/docs/config.md#basic-connection-manager) that ships with `go-ipfs`.
 
+The IPFS repo is also garbage-cleaned frequently to clear any irrelevant (unpinned) blocks. Less blocks in cache means smaller *IHAVE* lists and thereby less providing to directly connected peers.
+
+Note that the connection manager and frequent repo cleanup reduce bandwidth only at the cost of CPU.
+
 The go-ipfs config file has been tuned to reduce resource (CPU/bandwidth/memory) consumption.
 
 WAN-only and LAN-only modes are available (see [Usage](#usage)) to further optimize resource consumption under different situations.
+
+To minimize disk usage wherever possible, [IPFS-filestore](https://github.com/ipfs/go-ipfs/blob/master/docs/experimental-features.md#ipfs-filestore) is used.
+
+For efficiency regarding file-sharing, see [File or directory sharing](#file-or-directory-sharing).
 
 **Tip**: To show bandwidth usage by the node at the end of a session, launch `ipfs-chat` with the `-b` flag. Note that this shows the cumulative bandwidth consumption by all `ipfs-chat` instances using the same node at the same time.
 
@@ -161,13 +196,15 @@ WAN-only and LAN-only modes are available (see [Usage](#usage)) to further optim
 
 `ipfs-chat` does a `pkill -s0` while exiting which closes all processes in the current terminal session. Fixing this limitation is in the TODO list. For the time being, however, it is advised that `ipfs-chat` be opened in a new terminal whenever possible.
 
+## Fully decentralized vs (Semi-)centralized
+
+Apart from its dependence on an array of bootstrap and relay-hop nodes, `ipfs-chat` is fully server/broker-less. As long as these bootstrap and relay-hop nodes are public, there is much redundancy and hence resilience. Also, many bootstrap and relay-hop nodes are addressed using IP rather than DNS names. This should make the default `ipfs-chat` censor-resistant. However, should you so need, you can always replace the public bootstrap and relay-hop nodes with your own one(s).
+
 ## Future directions
 
-1. Secure file sharing. Files to be shared can simply be dragged and dropped in the text-input area. Support for WSL. Download limit (byte size *int*) can be specified with option `-D` to control bandwidth consumption - the user would be prompted before larger files downloads. `-D 0` : prompt always; `-D n` : prompt before downloading files larger than *n* bytes; `-D -n` : prompt never.
+1. Secure directory transfer. Secure file sharing. Files to be shared can simply be dragged and dropped in the text-input area. **Support for WSL**. Download limit (byte size *int*) can be specified with option `-D` to control bandwidth consumption - the user would be prompted before larger files downloads. `-D 0` : prompt always; `-D n` : prompt before downloading files larger than *n* bytes; `-D -n` : prompt never.
 2. Using Argon2 for more security (See [Security](#security)).
-4. Command-line option for manual update: `-u`. Try auto-update in background always and prompt user when new update is available.
-5. Detect and block malicious peers. All direct connections to blocked peers are culled. Users can also block (and unblock later) specific nicks (regex pattern), peer IDs. While blocking users can opt for - 1. Block permanently; 2. For present session only. **TBD**: News of this blocking (who blocked whom and when) may or may not be published over pubsub for other peers to see and decide for themselves.
-9. Secure directory transfer
+3. Detect and block malicious peers. All direct connections to blocked peers are culled. Users can also block (and unblock later) specific nicks (regex pattern), peer IDs. While blocking users can opt for - 1. Block permanently; 2. For present session only. **TBD**: News of this blocking (who blocked whom and when) may or may not be published over pubsub for other peers to see and decide for themselves.
 10. Offline mode such that even if a peer goes offline, it can obtain the missed messages when it comes back online [This may well be beyond my capabilities]. Once [`orbit-db-cli`](https://github.com/orbitdb/orbit-db-cli) matures, it might help achieve this. Random idea: Online peers publish CIDs of time-based logs at regular intervals over pubsub. Logs are directories containing chats - one message in one file. Even if logs of two peers don't match exactly, they will have many files in common, thus achieving major deduplication and also helping availability across the ipfs-chat network.
 
 ## Bug-reports and Feedbacks
