@@ -107,7 +107,7 @@ parse_cmdline(){
     case "${opt}" in
       n) nick="${OPTARG}";;
       r) room="${OPTARG}";;
-      d) dldir="${OPTARG}";;
+      d) local wsl_path="$(wslpath "${OPTARG}" 2>/dev/null)"; dldir="${wsl_path:-"${OPTARG}"}";;
       c) local repo="${OPTARG}";;
       g) echo -n "Random room: " >&2; dd if=/dev/urandom count=1 bs=6 2>/dev/null | base64; exit;;
       w|W) export connect_mode="WAN";;
@@ -119,7 +119,11 @@ parse_cmdline(){
       h|*) usage;;
     esac
   done
-  export room="${room:="salon"}" nick="${nick:="${USER}"}" dldir="${dldir:="${HOME}/ipfs-chat-downloads"}"
+  export room="${room:="salon"}" nick="${nick:="${USER}"}"
+
+  export dldir="${dldir:="${HOME}/ipfs-chat-downloads"}"
+  mkdir -p "${dldir}" 2>/dev/null || { echo "Error: Directory at '${dldir}' could not be created. Exiting." >&2; exit 1;}
+
   export IPFS_PATH="${repo:-"${HOME}/.ipfs-chat"}"
 }; export -f parse_cmdline
 
@@ -396,15 +400,14 @@ file_pack(){
   # Brief: Encrypt file with its salted hash, add to IPFS & output CID and encrypt key
   # Usage: file_pack <file containing the path of the file to be shared> # This is just for simplicity of `send` code below
   # This function also replaces the path present in the given file with just the filename
-  local msg="${1}"
-  local path="$(cat "${msg}")" filename
+  local msg="${1}" path filename
+  local wsl_path="$(xargs -a "${msg}" wslpath 2>/dev/null)"
+  path="${wsl_path:-"$(cat "${msg}")"}"
   if [[ -f "${path}" ]]; then
     filename="${path##*/}"
-    echo -n "${filename}" > "${msg}"
   elif [[ -d "${path}" ]]; then
     local dir="${path}"; path="$(tmpgen)"; tar --create --file="${path}" "${dir}"
-    filename="${path##*/}.tar.gz"
-    echo -n "${filename}" > "${msg}"
+    filename="${dir##*/}.tar.gz"
   else
     return 1    
   fi
@@ -415,6 +418,7 @@ file_pack(){
     echo "${enc_hash} $(ipfs add --nocopy --fscache -Q "${cache}")" | flock "${sess_uplds}" tee -a "${sess_uplds}"
   fi
   # Openssl with -nosalt instead of GPG, because GPG or Openssl -salt encryption is time dependent
+  echo -n "Sent file: \"${filename}\"" > "${msg}"
 } 2>/dev/null; export -f file_pack
 
 send(){
