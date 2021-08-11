@@ -41,7 +41,7 @@ dep_check(){
   # Brief: Check major dependencies
   local ipfs_version quit
   if ipfs_version=$(ipfs version --number 2>/dev/null); then
-    local req_ipfs_ver=0.9.1 # Minimum ipfs-cli version required
+    local req_ipfs_ver=0.9.0 # Minimum ipfs-cli version required
     [[ "$(echo -e "${ipfs_version}\n${req_ipfs_ver}" | sort -V | head -n1)" == "${req_ipfs_ver}" ]] || \
       { echo -e "Required: go-ipfs-cli version >= ${req_ipfs_ver}\nSuggestion: ipfs update install latest\n"; quit="yes";}
   else
