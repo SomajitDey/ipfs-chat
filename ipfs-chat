@@ -163,6 +163,12 @@ ipfs_config(){
     ipfs config Swarm.ConnMgr.Type none
     ipfs config --bool Swarm.EnableRelayHop false
     ipfs config --json Experimental.FilestoreEnabled true
+
+    # Regular auto-GC: Less irrelevant blocks cached => less such blocks provided
+    # Garbage cleaning doesn't delete cached IPNS records that didn't expire
+    ipfs config --json Datastore.StorageGCWatermark 0
+    ipfs config Datastore.GCPeriod 30s
+    ipfs config --bool Datastore.HashOnRead false
   fi
 
   export sess_peers="${IPFS_PATH}/session_peers" # This file caches all ipfs-chat peers (multiaddresses) seen when node is online
@@ -178,8 +184,7 @@ ipfs_config(){
   # Repo cleanup when no other instance is running; i.e. node is offline
   if ! ipfs swarm peers; then
     rm -f "${sess_peers}" "${sess_uplds}"
-    ipfs pin ls --type all | cut -d' ' -f1 | xargs -n1 ipfs pin rm
-    ipfs repo gc
+    ipfs pin ls --type=recursive --quiet | xargs ipfs pin rm
   fi &>/dev/null
   
   ipfs config --bool Swarm.DisableBandwidthMetrics "${disable_bandwidth_metrics:-true}"
@@ -222,7 +227,7 @@ ipfs_config(){
   local gateway_port="$(pscan "${API_port}")"; ipfs config Addresses.Gateway "/ip4/127.0.0.1/tcp/${gateway_port:=8080}"
 
   until ipfs swarm peers;do
-    flock -s "${global_fs}" setsid --fork ipfs daemon --enable-pubsub-experiment --enable-namesys-pubsub
+    flock -s "${global_fs}" setsid --fork ipfs daemon --enable-pubsub-experiment --enable-namesys-pubsub --enable-gc
     # setsid makes sure daemon runs in a separate session, such that `pkill -s 0` does not kill it.
     sleep 0.1
   done &>/dev/null
@@ -356,7 +361,7 @@ file_unpack(){
     ((max_dl_MB < 0)) || (($(ipfs files stat --size /ipfs/"${cid}") < max_dl_MB*1024*1024)) || return 1
     local buffer="$(tmpgen)"
     ipfs cat "${cid}" | openssl enc -aes128 -pass pass:"${dec_hash}" -nosalt -a -A -d -out "${buffer}" && \
-      mv "${buffer}" "${cache}" # && ipfs pin add "${cid}"
+      mv "${buffer}" "${cache}" && ipfs pin add "${cid}"
   fi
   ln --backup=numbered "${cache}" "${dlpath}$(check_mime_type "${cache}" "${dlpath}")"
 } &>/dev/null 3>"${dl_lock}"; export -f file_unpack
@@ -427,7 +432,8 @@ peering_daemon(){
     local dht_ops_pid=() # Stores pid's of background DHT operations executing in the current pass
     local timestamp="${EPOCHSECONDS}" # Current Unix time
     ipfs pubsub pub "${broadcast}" "$(ipfs id "${selfID}" -f="<addrs>\n")" & # Announce own multiaddresses
-    local nonce="$(hmac "${room}" "$((timestamp/120))" | ipfs add -Q --pin=false)" # Announce time based nonce
+    local nonce="$(hmac "${room}" "$((timestamp/120))" | ipfs add -Q --stdin-name='Rendezvous')" # Announce time based nonce
+    ipfs pin rm "${nonce}" &>/dev/null & # Otherwise reprovider will continue announcing stale nonce. Pin still necessary to save from auto-GC
     sort -u <(ipfs pubsub peers "${topic}") <(timeout 5 ipfs dht findprovs "${nonce}") > "${peerID_list}" # Peer discovery. TODO: Need a slower one?
     for peerID in $(cat "${peerID_list}"); do # Connecting to peers and importing their pubkeys
       (cache_peer "${peerID}"
@@ -440,8 +446,6 @@ peering_daemon(){
     wait ${dht_ops_pid[@]} # Wait till all DHT operations are complete
     sort -o "${buffer}" "${buffer}" && mv "${buffer}" "${peers}" # In-place sort followed by atomic move
     con_cull # Need for DHT is over for now. So, let's cull unnecessary connections to reduce bandwidth usage.
-    # flock -n "${dl_lock}" ipfs repo gc -q &>/dev/null # To reduce bandwidth at the cost of CPU. Less irrelevant blocks cached => less such blocks provided
-    # Garbage cleaning doesn't delete cached IPNS records that didn't expire
     sleep "$((30-EPOCHSECONDS+timestamp))" 2>/dev/null # TBD: 30s or less? Redirection for when the sleep time is negative
   done  
 } &>"${tmpdir}/peering_daemon.log"; export -f peering_daemon
@@ -467,7 +471,7 @@ file_pack(){
   if ! grep -m1 "${enc_hash}" "${sess_uplds}"; then
     local cache="${global_fs}/${enc_hash}"
     [[ -f "${cache}" ]] || openssl enc -aes128 -pass pass:"${enc_hash}" -nosalt -a -A -in "${path}" -out "${cache}"
-    echo "${enc_hash} $(ipfs add --pin=false --nocopy --fscache -Q "${cache}")" | flock "${sess_uplds}" tee -a "${sess_uplds}"
+    echo "${enc_hash} $(ipfs add --nocopy --fscache -Q "${cache}")" | flock "${sess_uplds}" tee -a "${sess_uplds}"
   fi
   # Openssl with -nosalt instead of GPG, because GPG or Openssl -salt encryption is time dependent
   echo -n "Sent file: \"${filename}\"" > "${msg}"
