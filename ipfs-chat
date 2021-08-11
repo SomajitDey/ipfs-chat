@@ -486,7 +486,9 @@ file_pack(){
   if ! grep -m1 "${enc_hash}" "${sess_uplds}"; then
     local cache="${global_fs}/${enc_hash}"
     [[ -f "${cache}" ]] || openssl enc -aes128 -pass pass:"${enc_hash}" -nosalt -a -A -in "${path}" -out "${cache}"
-    echo "${enc_hash} $(ipfs add --nocopy --fscache -Q "${cache}")" | flock "${sess_uplds}" tee -a "${sess_uplds}"
+    local hlink="$(tmpgen)"; ln -f "${cache}" "${hlink}"
+    # This is necessary for ipfs add --nocopy below; otherwise ipfs add fails if cache is outside "${IPFS_PATH}/.."
+    echo "${enc_hash} $(ipfs add --nocopy --fscache -Q "${hlink}")" | flock "${sess_uplds}" tee -a "${sess_uplds}"
   fi
   # Openssl with -nosalt instead of GPG, because GPG or Openssl -salt encryption is time dependent
   echo -n "Sent file: \"${filename}\"" > "${msg}"
