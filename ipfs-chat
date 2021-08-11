@@ -163,16 +163,17 @@ ipfs_config(){
     ipfs config Swarm.ConnMgr.Type none
     ipfs config --bool Swarm.EnableRelayHop false
     ipfs config --json Experimental.FilestoreEnabled true
-
-    # Regular auto-GC: Less irrelevant blocks cached => less such blocks provided
-    # Garbage cleaning doesn't delete cached IPNS records that didn't expire
-    ipfs config --json Datastore.StorageGCWatermark 0
-    ipfs config Datastore.GCPeriod 30s
-    ipfs config --bool Datastore.HashOnRead false
   fi
 
   export sess_peers="${IPFS_PATH}/session_peers" # This file caches all ipfs-chat peers (multiaddresses) seen when node is online
   export sess_uplds="${IPFS_PATH}/session_uploads" # Maps SHA1 hash of file to CID of its hash-encrypted object
+
+  # Repo cleanup when no other instance is running; i.e. node is offline
+  if ! ipfs swarm peers; then
+    rm -f "${sess_peers}" "${sess_uplds}"
+    ipfs pin ls --type=recursive --quiet | xargs -n1 ipfs pin rm # Remove stale pins to destress reprovider
+  fi &>/dev/null # Can't be non-blocking. Otherwise launching IPFS daemon shows, "ERROR: lock ... :someone else has lock"
+  echo -ne "$(tput ed)Status: Stale pins removed\r"
 
   export global_fs="${HOME}/.filestore-ipfs-chat" # For multinode deduplication. UL files named after SHA1, DL files after CID
   mkdir -p "${global_fs}"; local global_fs_MB="$(du -BM "${global_fs}" | awk '{print $1}' | tr -d M)"
@@ -180,12 +181,6 @@ ipfs_config(){
   if ((global_fs_MB > 1024)); then
     flock -n "${global_fs}" rm -rf "${global_fs}"/*
   fi
-  
-  # Repo cleanup when no other instance is running; i.e. node is offline
-  if ! ipfs swarm peers; then
-    rm -f "${sess_peers}" "${sess_uplds}"
-    ipfs pin ls --type=recursive --quiet | xargs ipfs pin rm
-  fi &>/dev/null
   
   ipfs config --bool Swarm.DisableBandwidthMetrics "${disable_bandwidth_metrics:-true}"
 
@@ -227,17 +222,34 @@ ipfs_config(){
   local gateway_port="$(pscan "${API_port}")"; ipfs config Addresses.Gateway "/ip4/127.0.0.1/tcp/${gateway_port:=8080}"
 
   until ipfs swarm peers;do
-    flock -s "${global_fs}" setsid --fork ipfs daemon --enable-pubsub-experiment --enable-namesys-pubsub --enable-gc
+    setsid --fork flock -sF "${global_fs}" ipfs daemon --enable-pubsub-experiment --enable-namesys-pubsub # Non-blocking due to --fork
     # setsid makes sure daemon runs in a separate session, such that `pkill -s 0` does not kill it.
+    # TODO: Once main exit trap is refactored, perhaps we can do away with setsid.
     sleep 0.1
   done &>/dev/null
-  echo "Status: IPFS node is configured"
+  echo "$(tput ed)Status: IPFS node is configured"
   
   export selfID="$(ipfs config Identity.PeerID)"
   export topic="$(hmac "ipfs-chat" "${room}")" broadcast="$(hmac "peer-addresses" "${room}")"
 } >&2; export -f ipfs_config
 
 ipfs_config
+
+safe_gc(){
+  # Brief: Remove blocks that are not pinned. Difference with `ipfs repo gc` is that this removes only those blocks
+  # that are there when function is called, even if the actual cleanup takes time. Also, can check lock for added safety.
+  # Usage: safe_gc [<lock-file>]
+  # Note: Requires IPFS to be online otherwise exit with error
+  ipfs swarm peers && flock -n 3 || return 1
+  local lock="${1}"
+  if [[ -n "${lock}" ]]; then
+    flock -n "${lock}" ipfs refs local # This doesn't take much time
+  else
+    ipfs refs local
+  fi | xargs -n1 ipfs block rm # This is the time consuming part
+} &>/dev/null 3<"${IPFS_PATH}/config"; export -f safe_gc
+
+safe_gc &
 
 config(){
   # Brief: General config. Compute and export variables. Setup tmp dir and runtime filesystem.
@@ -270,7 +282,8 @@ config(){
     fi
   }; export -f lwrap
   
-  trap "trap '' TERM; pkill -s 0; rm -rf ${tmpdir}; ls -d ${IPFS_PATH}/room#* &>/dev/null || ipfs shutdown" exit # TODO: Replace pkill -s 0 with smthing better
+  trap "trap '' TERM; pkill -s 0; rm -rf ${tmpdir}; ls -d ${IPFS_PATH}/room#* &>/dev/null || (ipfs shutdown; gpgconf --kill gpg-agent)" exit
+  # TODO: Replace pkill -s 0 with smthing better. If `kill -9 -1`, room# is not removed & new instance can't run. Fix ASAP.
 } >&2; export -f config
 
 config
@@ -446,6 +459,8 @@ peering_daemon(){
     wait ${dht_ops_pid[@]} # Wait till all DHT operations are complete
     sort -o "${buffer}" "${buffer}" && mv "${buffer}" "${peers}" # In-place sort followed by atomic move
     con_cull # Need for DHT is over for now. So, let's cull unnecessary connections to reduce bandwidth usage.
+    safe_gc "${dl_lock}" & # Remove irrelevant blocks in bg
+    # Lockfile makes sure this is not run during file download, as otherwise downloaded but yet unpinned blocks might be GCd
     sleep "$((30-EPOCHSECONDS+timestamp))" 2>/dev/null # TBD: 30s or less? Redirection for when the sleep time is negative
   done  
 } &>"${tmpdir}/peering_daemon.log"; export -f peering_daemon
@@ -544,7 +559,15 @@ ui(){
            ;;
         *) # Esc
            local confirm_quit="Shared file download is in progress. Still wanna quit?"
-           if flock -n "${dl_lock}" -c : || dialog --keep-tite --yesno "${confirm_quit}" "$(tput lines)" "$(tput cols)"; then
+           if ! flock -n "${dl_lock}" -c : ; then
+            # Check if dl_lock is held by file_unpack or safe_gc. In the latter case, return without prompt.
+            if flock -s "${dl_lock}" -c : ; then
+              # Read lock could be acquired, hence it must be file_unpack that's holding dl_lock
+              dialog --keep-tite --yesno "${confirm_quit}" "$(tput lines)" "$(tput cols)" && return "${exit_code}"
+            else
+              return "${exit_code}" # Lock held by safe_gc
+            fi
+           else
             return "${exit_code}"
            fi
            ;;
