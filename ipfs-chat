@@ -17,21 +17,24 @@ Version: " >&2
 
 usage(){
   # Brief: Show help and exit
-  echo -e "\nUsage: ipfs-chat [-n <nick>] [-r <room>] [-d <file-download-dir>] [-c <ipfs-repo-path>] [-o <chat-log-path>] [-w | -l]"
+  echo -e "\nUsage: ipfs-chat [-n <nick>] [-r <room>] [-d <file-download-dir>] [-D <max-download-MB>] [-c <ipfs-repo-path>] [-o <chat-log-path>] [-w | -l]"
   echo -e "\nNote: -w or -W implies WAN-only connection; -l|-L is LAN-only; To have both WAN & LAN, don't use any of these flags"
   echo -e "\nVersion: ipfs-chat -v"
   echo -e "\nUpdate: ipfs-chat -u"
   echo -e "\nGenerate random room name: ipfs-chat -g"
+  echo -e "\nEnable shared file extension check against MIME-type: ipfs-chat -e"
   echo ; exit 1
 } >&2; export -f usage
 
 hmac(){
   # Usage: hmac <salt> <string>
-  # Output: base64
+  # Output: base64, with / replaced by _, and trailing = dropped
   sha1(){ sha1sum <(echo -n "${1}") | cut -d ' ' -f 1;} # Usage: sha1 <string>
   local key="$(sha1 "${1}")" data="$(sha1 "${2}")"
   echo -n "${data}" | xxd -r -p | openssl dgst -sha1 -mac hmac -macopt hexkey:"${key}" | cut -d ' ' -f 2 | \
-    xxd -r -p | base64 -w0 | tr -d = # Deleting last = because base64 encoding 160-bit hmac always gives single =
+    xxd -r -p | base64 -w0 | tr -d '=' | tr '/' '_'
+  # Deleting last = because base64 encoding 160-bit hmac always gives single =, hence redundant
+  # Substituting / with _ because / messes up using hmac outputs as directory or filenames
 }; export -f hmac
 
 dep_check(){
@@ -46,19 +49,28 @@ dep_check(){
     quit="yes"
   fi
   if ! command -v dialog &>/dev/null; then
-    echo -e "Required: dialog\nSource: Native package repository\n"
+    echo -e "Required: dialog\nSource: Native package repository"
+    echo -e "Ref: https://command-not-found.com/dialog\n"
     quit="yes"
   fi
   if ! command -v setsid &>/dev/null; then
-    echo -e "Required: setsid\nSource: Native package repository\n"
+    echo -e "Required: setsid\nSource: Native package repository"
+    echo -e "Ref: https://command-not-found.com/setsid\n"
     quit="yes"
   fi
   if ! command -v curl &>/dev/null; then
-    echo -e "Required: curl\nSource: Native package repository\n"
+    echo -e "Required: curl\nSource: Native package repository"
+    echo -e "Ref: https://command-not-found.com/curl\n"
     quit="yes"
   fi
   if ! command -v openssl &>/dev/null; then
-    echo -e "Required: openssl\nSource: Native package repository\n"
+    echo -e "Required: openssl\nSource: Native package repository"
+    echo -e "Ref: https://command-not-found.com/openssl\n"
+    quit="yes"
+  fi
+  if ! command -v tput &>/dev/null; then
+    echo -e "Required: tput\nSource: Native package repository"
+    echo -e "Ref: https://command-not-found.com/tput\n"
     quit="yes"
   fi
   [[ -v quit ]] && exit 1
@@ -103,11 +115,12 @@ update(){
 
 parse_cmdline(){
   local opt OPTIND=1
-  while getopts n:r:d:c:gwWlLo:vbuh opt;do
+  while getopts n:r:d:D:c:gwWlLo:vbeuh opt;do
     case "${opt}" in
       n) nick="${OPTARG}";;
       r) room="${OPTARG}";;
       d) local wsl_path="$(wslpath "${OPTARG}" 2>/dev/null)"; dldir="${wsl_path:-"${OPTARG}"}";;
+      D) max_dl_MB="${OPTARG}";;
       c) local repo="${OPTARG}";;
       g) echo -n "Random room: " >&2; dd if=/dev/urandom count=1 bs=6 2>/dev/null | base64; exit;;
       w|W) export connect_mode="WAN";;
@@ -115,14 +128,16 @@ parse_cmdline(){
       o) export chat="${OPTARG}";;
       v) echo "${version}"; exit;;
       b) export disable_bandwidth_metrics="false";;
+      e) export mime_type_check="enabled";;
       u) update; exit "${?}";;
       h|*) usage;;
     esac
   done
   export room="${room:="salon"}" nick="${nick:="${USER}"}"
 
-  export dldir="${dldir:="${HOME}/ipfs-chat-downloads"}"
+  export dldir="${dldir:="${HOME}/ipfs-chat-downloads"}" max_dl_MB="${max_dl_MB:=-1}"
   mkdir -p "${dldir}" 2>/dev/null || { echo "Error: Directory at '${dldir}' could not be created. Exiting." >&2; exit 1;}
+  [[ "${max_dl_MB}" =~ ^[-]?[[:digit:]]+$ ]] || { echo "Error: -D value should be an integer" >&2; exit 1;}
 
   export IPFS_PATH="${repo:-"${HOME}/.ipfs-chat"}"
 }; export -f parse_cmdline
@@ -230,7 +245,7 @@ config(){
   mkdir "${tmpdir}" 2>/dev/null || { echo "Error: Another instance running"; exit 1;}
   tmpgen(){ mktemp "${tmpdir}/.XXXXX";}; export -f tmpgen
 
-  export chat="${chat:-"${tmpdir}/chat"}" peers="${tmpdir}/peers" input="${tmpdir}/input"
+  export chat="${chat:-"${tmpdir}/chat"}" peers="${tmpdir}/peers" input="${tmpdir}/input" dl_lock="${tmpdir}/dl.lock"
   :>"${chat}"; :>"${peers}"; :>"${input}" # Clear files: Redirected no-op
 
   export code="${tmpdir}/latest_version"
@@ -314,6 +329,38 @@ peer_pubkey_nick(){
   tail -n1 "${peer_pubkey}"
 } 2>/dev/null ; export -f peer_pubkey_nick
 
+check_mime_type(){
+  # Brief: Checks if mime-type of given file matches with the file extension. If extension is unknown, let it be.
+  # If extension refers to different mime-type, Fail.
+  # Usage: check_mime_type <path> <extension>
+  [[ -v mime_type_check ]] || return 0
+  local mime_type_table="/etc/mime.types" path="${1}" ext="${2##*.}"
+  [[ -f "${mime_type_table}" ]] || return 0 # Perhaps this table exists only in Debian and Ubuntu
+  local mime_frm_ext="$(grep -m1 -w "${ext}" "${mime_type_table}" | awk '{print $1}')"
+  if [[ -n "${mime_frm_ext}" ]]; then
+    local actual_mime="$(file -ib "${path}" | cut -d ';' -f 1)" # -i or --mime is more supported than --mime-type
+    [[ "${actual_mime}" != "${mime_frm_ext}" ]] && \
+      echo ".$(grep -w "${actual_mime}" "${mime_type_table}" | awk '{print $2}')"
+  fi
+} 2>/dev/null; export check_mime_type
+
+file_unpack(){
+  # Brief: Download and decrypt shared file
+  # Usage: file_unpack <file-hash> <IPFS-CID> <filename>
+  # TODO: MIME-type checking of filename extension using a list of all common mime-types. Command `file -ib`, --mime-type doesn't work for RHEL
+  # TODO: Ask user for permission to download instead of rejecting for size>max_dl_MB
+  flock -s 3
+  local dec_hash="${1}" cid="${2}" dlpath="${dldir}/${3}"
+  local cache="${global_fs}/${cid}"
+  if ! [[ -f "${cache}" ]]; then
+    ((max_dl_MB < 0)) || (($(ipfs files stat --size /ipfs/"${cid}") < max_dl_MB*1024*1024)) || return 1
+    local buffer="$(tmpgen)"
+    ipfs cat "${cid}" | openssl enc -aes128 -pass pass:"${dec_hash}" -nosalt -a -A -d -out "${buffer}" && \
+      mv "${buffer}" "${cache}" # && ipfs pin add "${cid}"
+  fi
+  ln --backup=numbered "${cache}" "${dlpath}$(check_mime_type "${cache}" "${dlpath}")"
+} &>/dev/null 3>"${dl_lock}"; export -f file_unpack
+
 subscriber_daemon(){
   # Brief: Listen to messages at pubsub, decrypt & verify signature, display if ok
   # TODO: Malicious peer detection and blocking.
@@ -334,10 +381,15 @@ subscriber_daemon(){
     esac < <(echo -n "${readbuff}" | base64 -d) > "${buffer}" 2> "${gpg_stderr}" || exit 1
     grep -iq "Good signature from \"${peerID}\"" "${gpg_stderr}" || exit 1 # Verify authenticity/signature
     grep -xq '[[:print:]]*' "${buffer}" || exit 1 # Check msg is text only to avoid spam
-    read timestamp CID < <(head -n1 "${buffer}" | grep -xE '[[:digit:]]*[[:blank:]]([[:alnum:]]*[[:blank:]][[:alnum:]]*)?')
+    read timestamp dec_hash CID < <(head -n1 "${buffer}" | grep -xE '[[:digit:]]*[[:blank:]]([[:alnum:]+_]*[[:blank:]][[:alnum:]]*)?')
     timestamp="$(date -d @${timestamp} +"%a %H:%M:%S")" || exit 1
     prefix="${prefix}${sender} @${peerID:${#peerID}-6:6} ${timestamp} -- "
-    flock "${chat}" cat <(echo -n "${prefix}") <(tail -n+2 "${buffer}") <(echo -e \\n) | lwrap >> "${chat}")&
+    flock "${chat}" cat <(echo -n "${prefix}") <(tail -n+2 "${buffer}") <(echo -e \\n) | lwrap >> "${chat}"
+    if [[ -n "${dec_hash}" ]]; then
+      eval filename="$(awk NR==2 "${buffer}" | cut -d ' ' -f 3-)" # eval is for quote removal
+      file_unpack "${dec_hash}" "${CID}" "${filename}"
+    fi
+    )&
   done < <(ipfs pubsub sub "${topic}" | grep --line-buffered -x '[[:alnum:]]*[[:blank:]][[:alnum:]+/=]*[[:blank:]][[:alnum:]]*')
 } &>"${tmpdir}/subscriber_daemon.log"; export -f subscriber_daemon
 
@@ -388,7 +440,7 @@ peering_daemon(){
     wait ${dht_ops_pid[@]} # Wait till all DHT operations are complete
     sort -o "${buffer}" "${buffer}" && mv "${buffer}" "${peers}" # In-place sort followed by atomic move
     con_cull # Need for DHT is over for now. So, let's cull unnecessary connections to reduce bandwidth usage.
-    ipfs repo gc -q &>/dev/null # To reduce bandwidth at the cost of CPU. Less irrelevant blocks cached => less such blocks provided
+    # flock -n "${dl_lock}" ipfs repo gc -q &>/dev/null # To reduce bandwidth at the cost of CPU. Less irrelevant blocks cached => less such blocks provided
     # Garbage cleaning doesn't delete cached IPNS records that didn't expire
     sleep "$((30-EPOCHSECONDS+timestamp))" 2>/dev/null # TBD: 30s or less? Redirection for when the sleep time is negative
   done  
@@ -402,7 +454,7 @@ file_pack(){
   # This function also replaces the path present in the given file with just the filename
   local msg="${1}" path filename
   local wsl_path="$(xargs -a "${msg}" wslpath 2>/dev/null)"
-  path="${wsl_path:-"$(cat "${msg}")"}"
+  eval path="${wsl_path:-"$(cat "${msg}")"}" # eval to remove double/single quote(s)
   if [[ -f "${path}" ]]; then
     filename="${path##*/}"
   elif [[ -d "${path}" ]]; then
@@ -411,11 +463,11 @@ file_pack(){
   else
     return 1    
   fi
-  local enc_hash="$(sha1sum -b "${path}" | cut -d' ' -f1 | xxd -r -p | base64 -w 0 | tr -d =)"
+  local enc_hash="$(sha1sum -b "${path}" | cut -d' ' -f1 | xxd -r -p | base64 -w 0 | tr -d '=' | tr '/' '_')"
   if ! grep -m1 "${enc_hash}" "${sess_uplds}"; then
     local cache="${global_fs}/${enc_hash}"
     [[ -f "${cache}" ]] || openssl enc -aes128 -pass pass:"${enc_hash}" -nosalt -a -A -in "${path}" -out "${cache}"
-    echo "${enc_hash} $(ipfs add --nocopy --fscache -Q "${cache}")" | flock "${sess_uplds}" tee -a "${sess_uplds}"
+    echo "${enc_hash} $(ipfs add --pin=false --nocopy --fscache -Q "${cache}")" | flock "${sess_uplds}" tee -a "${sess_uplds}"
   fi
   # Openssl with -nosalt instead of GPG, because GPG or Openssl -salt encryption is time dependent
   echo -n "Sent file: \"${filename}\"" > "${msg}"
@@ -486,7 +538,12 @@ ui(){
            dialog --keep-tite --no-shadow --exit-label "Back"\
            --title "ipfs-chat-room: ${room}" --begin 0 0 --textbox "${chat}" "${tty_height}" "${tty_width}"
            ;;
-        *) return "${exit_code}";; # Esc
+        *) # Esc
+           local confirm_quit="Shared file download is in progress. Still wanna quit?"
+           if flock -n "${dl_lock}" -c : || dialog --keep-tite --yesno "${confirm_quit}" "$(tput lines)" "$(tput cols)"; then
+            return "${exit_code}"
+           fi
+           ;;
       esac
   done
 }; export -f ui
@@ -495,9 +552,9 @@ echo "Status: Launching UI...(If it takes a long time to open, try pressing Ente
 
 [[ -v disable_bandwidth_metrics ]] && echo "Stats: $(ipfs stats bw | head -n3)" >&2
 
-if [[ -x "${code}" ]] && [[ "$(${code} -v 2>/dev/null)" != "${version}" ]]; then
-  echo "Status: Updating... This may require sudo password" >&2
-  update -s "${code}"
+if [[ -x "${code}" ]] && updateto="$(${code} -v 2>/dev/null)" && [[ "${updateto}" != "${version}" ]]; then
+  confirm_update="Update ipfs-chat from v${version} to v${updateto}?"
+  dialog --keep-tite --yesno "${confirm_update}" "$(tput lines)" "$(tput cols)" && update -s "${code}"
 fi
 
 echo "Status: Exiting..." >&2

@@ -1,6 +1,6 @@
 # IPFS-Chat
 
-1. Real-time, secure, peer-to-peer messaging using [IPFS pubsub](https://github.com/ipfs/go-ipfs/blob/master/docs/experimental-features.md#ipfs-pubsub). Allows in-chat file/directory sharing and private messaging. Works over both internet and LAN. Built-in NAT/Firewall traversal using [IPFS autorelay](https://github.com/ipfs/go-ipfs/blob/master/docs/experimental-features.md#autorelay).
+1. Real-time, secure, peer-to-peer messaging using [IPFS pubsub](https://github.com/ipfs/go-ipfs/blob/master/docs/experimental-features.md#ipfs-pubsub). Allows in-chat file/directory sharing and private messaging. Works over both internet and LAN. Built-in NAT-traversal using [IPFS autorelay](https://github.com/ipfs/go-ipfs/blob/master/docs/experimental-features.md#autorelay).
 2. Very basic terminal-based UI without any eye candy.
 3. The usual *Create Alias/Nick* + *Create/Join room* workflow (akin to [IRC](https://en.wikipedia.org/wiki/Internet_Relay_Chat)).
 4. Fully distributed - serverless/brokerless. Peers are discovered using [DHT](https://docs.ipfs.io/concepts/dht/), [pubsub](https://docs.libp2p.io/concepts/publish-subscribe/) and [mDNS](https://en.wikipedia.org/wiki/Multicast_DNS) (See [Peer discovery](#peer-discovery)). No need for any rendezvous server. Without any central server(s), `ipfs-chat` cannot be censored/blocked.
@@ -35,7 +35,7 @@ Do you want an auto-install feature, such as `./ipfs-chat -i`? If so, please [po
 ## Usage
 
 ```shell
-ipfs-chat -r <room> -n <nick> -d <download directory> -c <ipfs repo> -o <chat log> -wWlL
+ipfs-chat -r <room> -n <nick> -d <dl dir> -D <max dl MB> -c <repo> -o <log> -wle
 ipfs-chat -g # Generating a random room name, for when your brain can't do it
 ipfs-chat -v # Version
 ipfs-chat -u # Update
@@ -44,15 +44,19 @@ ipfs-chat -h # Help
 
 All command-line options/flags are optional. Unobvious options are explained below.
 
-`-c` passes the directory where `ipfs-chat` would host the IPFS node; similar to the `-c` option in the `ipfs` cli. Unlike `ipfs` cli however, the environment variable `IPFS_PATH` has no effect.
+`-c` passes the directory where `ipfs-chat` would host the IPFS node (repository); similar to the `-c` option in the `ipfs` cli. Unlike `ipfs` cli however, the environment variable `IPFS_PATH` has no effect.
 
 `-d` passes the directory where the files received from peers would be downloaded.
+
+`-D` specifies the maximum size in MB for each shared file. Larger files are not downloaded. If the specified size is negative, it implies there is no maximum size.
 
 `-o` passes the file where the chat from the present session would be logged.
 
 `-w` or `-W` denotes WAN-only mode. Local discovery is disabled. Everything happens over internet only. Uses WAN-DHT.
 
 `-l` or `-L` denotes LAN-only mode. Peers are discovered only locally, no connection to the IPFS public network is formed over the internet (no bootstrap node, uses LAN-DHT). Saves resources when all chatroom peers are known to be present across LAN. Launches `ipfs-chat` faster when not connected to the internet.
+
+`-e` enables basic MIME-type check for the shared files. Suppose a malicious peer sends you an executable file but scrupulously gives it a .txt extension. `ipfs-chat` would add a .com or .exe extension to the file then. This feature is only available as long as there is a map of MIME-types to extensions at `/etc/mime.types` (e.g. in Debian & Ubuntu). This check is not always perfect - e.g. .md files are given an additional .asc or .txt extension. Hence, it is not enabled by default.
 
 `-u` does a manual update of `ipfs-chat`. This option is not very necessary as `ipfs-chat` auto-updates whenever there is internet connection and it is not running in LAN-only mode.
 
