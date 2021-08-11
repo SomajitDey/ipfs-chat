@@ -7,6 +7,7 @@
 5. Chat-messages are authenticated and end-to-end encrypted (See [Security](#security)). Shared files/directories are encrypted too.
 6. Developed with bandwidth, CPU and disk usage efficiency in mind.
 7. Written entirely in [Bash](https://www.gnu.org/software/bash/manual/bash.html); just a single shell-script. Apart from [go-ipfs](https://docs.ipfs.io/install/command-line/#official-distributions) and possibly `argon2`, depends only on standard GNU/Linux tools and tools that can be easily downloaded from the native package repository.
+8. For WSL, supports sharing Windows files or folders (through direct drag-n-drop) and downloading shared files in some Windows folder.
 
 ***Keywords*:** p2p; distributed; server-less; broker-less; TUI; secure; texting; file-sharing; ipfs; pubsub; privacy
 
@@ -26,8 +27,8 @@ Install:
 ```bash
 sudo mv ./ipfs-chat /usr/local/bin
 # Or if you don't have sudo priviledge:
-mkdir -p ~/.bin; mv ./ipfs-chat ~/.bin; export PATH="${PATH}:${HOME}/.bin" >> ~/.bashrc
-# Then restart bash/reopen the terminal
+mkdir -p ~/.bin; mv ./ipfs-chat ~/.bin; export PATH="${PATH}:${HOME}/.bin"
+# Also put the export command inside ${HOME}/.bashrc
 ```
 
 Do you want an auto-install feature, such as `./ipfs-chat -i`? If so, please [post](#bug-reports-and-feedbacks) a feature-request.
@@ -182,7 +183,7 @@ Connections to the chatroom peers are never closed.
 
 To achieve this, `ipfs-chat` uses its own connection manager and does not use the [basic connection manager](https://github.com/ipfs/go-ipfs/blob/master/docs/config.md#basic-connection-manager) that ships with `go-ipfs`.
 
-The IPFS repo is also garbage-cleaned frequently to clear any irrelevant (unpinned) blocks. Less blocks in cache means smaller *IHAVE* lists and thereby less providing to directly connected peers.
+The IPFS repo is also garbage-cleaned frequently to clear any irrelevant (unpinned) blocks. Less blocks in cache means smaller *IHAVE* lists and thereby less providing to directly connected peers. Simple `ipfs repo gc` was not trustworthy as it could delete newly downloaded, unpinned blocks during shared file downloads. Instead, `ipfs-chat` runs its own garbage cleaner.
 
 Note that the connection manager and frequent repo cleanup reduce bandwidth only at the cost of CPU.
 
@@ -206,10 +207,10 @@ Apart from its dependence on an array of bootstrap and relay-hop nodes, `ipfs-ch
 
 ## Future directions
 
-1. Secure directory transfer. Secure file sharing. Files to be shared can simply be dragged and dropped in the text-input area. **Support for WSL**. Download limit (byte size *int*) can be specified with option `-D` to control bandwidth consumption - the user would be prompted before larger files downloads. `-D 0` : prompt always; `-D n` : prompt before downloading files larger than *n* bytes; `-D -n` : prompt never.
 2. Using Argon2 for more security (See [Security](#security)).
-3. Detect and block malicious peers. All direct connections to blocked peers are culled. Users can also block (and unblock later) specific nicks (regex pattern), peer IDs. While blocking users can opt for - 1. Block permanently; 2. For present session only. **TBD**: News of this blocking (who blocked whom and when) may or may not be published over pubsub for other peers to see and decide for themselves.
-10. Offline mode such that even if a peer goes offline, it can obtain the missed messages when it comes back online [This may well be beyond my capabilities]. Once [`orbit-db-cli`](https://github.com/orbitdb/orbit-db-cli) matures, it might help achieve this. Random idea: Online peers publish CIDs of time-based logs at regular intervals over pubsub. Logs are directories containing chats - one message in one file. Even if logs of two peers don't match exactly, they will have many files in common, thus achieving major deduplication and also helping availability across the ipfs-chat network.
+2. Refactor codebase.
+3. Detect and block malicious peers. All direct connections to blocked peers are culled. Users can also block (and unblock later) specific nicks (regex pattern), peer IDs. While blocking, users can opt for - 1. Block permanently; 2. For present session only. **TBD**: News of this blocking (who blocked whom and when) may or may not be published over pubsub for other peers to see and decide for themselves.
+4. Offline mode such that even if a peer goes offline, it can obtain the missed messages when it comes back online [This may well be beyond my capabilities]. Once [`orbit-db-cli`](https://github.com/orbitdb/orbit-db-cli) matures, it might help achieve this. Random idea: Online peers publish CIDs of time-based logs at regular intervals over pubsub. Logs are directories containing chats - one message in one file. Even if logs of two peers don't match exactly, they will have many files in common, thus achieving major deduplication and also helping availability across the ipfs-chat network.
 
 ## Bug-reports and Feedbacks
 
