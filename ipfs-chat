@@ -412,7 +412,8 @@ subscriber_daemon(){
     flock "${chat}" cat <(echo -n "${prefix}") <(tail -n+2 "${buffer}") <(echo -e \\n) | lwrap >> "${chat}"
     if [[ -n "${dec_hash}" ]]; then
       eval filename="$(awk NR==2 "${buffer}" | cut -d ' ' -f 3-)" # eval is for quote removal
-      file_unpack "${dec_hash}" "${CID}" "${filename}"
+      file_unpack "${dec_hash}" "${CID}" "${filename}" || \
+        flock "${chat}" echo -e "Download failed -- ${filename}\n" | lwrap >> "${chat}"
     fi
     )&
   done < <(ipfs pubsub sub "${topic}" | grep --line-buffered -x '[[:alnum:]]*[[:blank:]][[:alnum:]+/=]*[[:blank:]][[:alnum:]]*')
@@ -487,7 +488,7 @@ file_pack(){
     local dir="${path}"; path="$(tmpgen)"; tar --create --file="${path}" "${dir}"
     filename="${dir##*/}.tar.gz"
   else
-    return 1    
+    return 0    
   fi
   local enc_hash="$(sha1sum -b "${path}" | cut -d' ' -f1 | xxd -r -p | base64 -w 0 | tr -d '=' | tr '/' '_')"
   if ! grep -m1 "${enc_hash}" "${sess_uplds}"; then
@@ -495,6 +496,7 @@ file_pack(){
     [[ -f "${cache}" ]] || openssl enc -aes128 -pass pass:"${enc_hash}" -nosalt -a -A -in "${path}" -out "${cache}"
     local hlink="$(tmpgen)"; ln -f "${cache}" "${hlink}"
     # This is necessary for ipfs add --nocopy below; otherwise ipfs add fails if cache is outside "${IPFS_PATH}/.."
+    ((max_dl_MB < 0)) || (("$(wc -c "${hlink}" | cut -d ' ' -f1)" < max_dl_MB*1024*1024)) || return 1
     echo "${enc_hash} $(ipfs add --nocopy --fscache -Q "${hlink}")" | flock "${sess_uplds}" tee -a "${sess_uplds}"
   fi
   # Openssl with -nosalt instead of GPG, because GPG or Openssl -salt encryption is time dependent
@@ -514,13 +516,17 @@ send(){
   else  
     mv "${input}" "${msg}"
   fi
-  (enc_hash_cid="$(file_pack "${msg}")"
-  buffer="$(cat <(echo "${EPOCHSECONDS} ${enc_hash_cid}") "${msg}" | \
-    case "${recipID}" in
-      all) gnupg --passphrase "${enc_key}" --pinentry-mode loopback -s -c --cipher-algo AES128;;
-      *) peer_pubkey_nick "${recipID}" >/dev/null ; gnupg --keyring "${peer_kbx}" -s -r "${recipID}" -e;;
-    esac | base64 -w0)"
-  ipfs pubsub pub "${topic}" "${selfID} ${buffer} ${recipID}"$'\n'
+  (
+  if enc_hash_cid="$(file_pack "${msg}")"; then
+    buffer="$(cat <(echo "${EPOCHSECONDS} ${enc_hash_cid}") "${msg}" | \
+      case "${recipID}" in
+        all) gnupg --passphrase "${enc_key}" --pinentry-mode loopback -s -c --cipher-algo AES128;;
+        *) peer_pubkey_nick "${recipID}" >/dev/null ; gnupg --keyring "${peer_kbx}" -s -r "${recipID}" -e;;
+      esac | base64 -w0)"
+    ipfs pubsub pub "${topic}" "${selfID} ${buffer} ${recipID}"$'\n'
+  else
+    prefix="Failed to send -- "
+  fi
   [[ -v prefix ]] && flock "${chat}" cat <(echo -n "${prefix}") "${msg}" <(echo -e \\n) | lwrap >> "${chat}"
   ) &
 } &>/dev/null; export -f send
