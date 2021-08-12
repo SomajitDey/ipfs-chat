@@ -26,16 +26,16 @@ usage(){
   echo ; exit 1
 } >&2; export -f usage
 
-hmac(){
-  # Usage: hmac <salt> <string>
-  # Output: base64, with / replaced by _, and trailing = dropped
+kdf(){
+  # Usage: kdf <salt> <string>
+  # Output: 160-bit base64 key, with / replaced by _, and the trailing = dropped
   sha1(){ sha1sum <(echo -n "${1}") | cut -d ' ' -f 1;} # Usage: sha1 <string>
-  local key="$(sha1 "${1}")" data="$(sha1 "${2}")"
-  echo -n "${data}" | xxd -r -p | openssl dgst -sha1 -mac hmac -macopt hexkey:"${key}" | cut -d ' ' -f 2 | \
-    xxd -r -p | base64 -w0 | tr -d '=' | tr '/' '_'
-  # Deleting last = because base64 encoding 160-bit hmac always gives single =, hence redundant
-  # Substituting / with _ because / messes up using hmac outputs as directory or filenames
-}; export -f hmac
+  local key="$(sha1 "${1}")" data="${2}"
+  # No-need to lose `data` bits by prehashing. Hashing `key` ensures argon2 salt is atleast 8 characters long.
+  echo -n "${data}" | argon2 "${key}" -t 4 -m 14 -p 1 -l 20 -r | xxd -r -p | base64 -w0 | tr -d '=' | tr '/' '_'
+  # Deleting last = because base64 encoding 160-bit kdf always gives single =, hence redundant
+  # Substituting / with _ because / messes up using kdf outputs as directory or filenames
+}; export -f kdf
 
 dep_check(){
   # Brief: Check major dependencies
@@ -71,6 +71,13 @@ dep_check(){
   if ! command -v tput &>/dev/null; then
     echo -e "Required: tput\nSource: Native package repository"
     echo -e "Ref: https://command-not-found.com/tput\n"
+    quit="yes"
+  fi
+  if ! command -v argon2 &>/dev/null; then
+    echo -e "Required: argon2-cli\nSource: Native package repository / web (pre-compiled binary or build from source)"
+    echo -e "Ref: https://command-not-found.com/argon2"
+    echo -e "Ref: https://github.com/SomajitDey/phc-winner-argon2/releases/download/static-build_linux_x86_64/argon2"
+    echo -e "Ref: https://github.com/P-H-C/phc-winner-argon2\n"
     quit="yes"
   fi
   [[ -v quit ]] && exit 1
@@ -230,7 +237,7 @@ ipfs_config(){
   echo "$(tput ed)Status: IPFS node is configured"
   
   export selfID="$(ipfs config Identity.PeerID)"
-  export topic="$(hmac "ipfs-chat" "${room}")" broadcast="$(hmac "peer-addresses" "${room}")"
+  export topic="$(kdf "ipfs-chat" "${room}")" broadcast="$(kdf "peer-addresses" "${room}")"
 } >&2; export -f ipfs_config
 
 ipfs_config
@@ -258,7 +265,7 @@ config(){
     echo "Note: Using ${nick} as nick" # Using separate nicks with same peer ID will cause conflicts with IPNS
   fi
 
-  export enc_key="$(hmac "symmetric-encryption-key" "${room}")" tmpdir="${IPFS_PATH}/room#${topic}"
+  export enc_key="$(kdf "symmetric-encryption-key" "${room}")" tmpdir="${IPFS_PATH}/room#${topic}"
   mkdir "${tmpdir}" 2>/dev/null || { echo "Error: Another instance running"; exit 1;}
   tmpgen(){ mktemp "${tmpdir}/.XXXXX";}; export -f tmpgen
 
@@ -357,7 +364,7 @@ check_mime_type(){
   local mime_frm_ext="$(grep -m1 -w "${ext}" "${mime_type_table}" | awk '{print $1}')"
   if [[ -n "${mime_frm_ext}" ]]; then
     local actual_mime="$(file -ib "${path}" | cut -d ';' -f 1)" # -i or --mime is more supported than --mime-type
-    [[ "${actual_mime}" != "${mime_frm_ext}" ]] && \
+    [[ "${actual_mime}" != "${mime_frm_ext}" ]] && [[ "${actual_mime}" =~ ^application/.*$ ]] && \
       echo ".$(grep -w "${actual_mime}" "${mime_type_table}" | awk '{print $2}')"
   fi
 } 2>/dev/null; export check_mime_type
@@ -445,7 +452,7 @@ peering_daemon(){
     local dht_ops_pid=() # Stores pid's of background DHT operations executing in the current pass
     local timestamp="${EPOCHSECONDS}" # Current Unix time
     ipfs pubsub pub "${broadcast}" "$(ipfs id "${selfID}" -f="<addrs>\n")" & # Announce own multiaddresses
-    local nonce="$(hmac "${room}" "$((timestamp/120))" | ipfs add -Q --stdin-name='Rendezvous')" # Announce time based nonce
+    local nonce="$(kdf "${room}" "$((timestamp/120))" | ipfs add -Q --stdin-name='Rendezvous')" # Announce time based nonce
     ipfs pin rm "${nonce}" &>/dev/null & # Otherwise reprovider will continue announcing stale nonce. Pin still necessary to save from auto-GC
     sort -u <(ipfs pubsub peers "${topic}") <(timeout 5 ipfs dht findprovs "${nonce}") > "${peerID_list}" # Peer discovery. TODO: Need a slower one?
     for peerID in $(cat "${peerID_list}"); do # Connecting to peers and importing their pubkeys

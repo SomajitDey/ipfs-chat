@@ -5,9 +5,11 @@
 3. The usual *Create Alias/Nick* + *Create/Join room* workflow (akin to [IRC](https://en.wikipedia.org/wiki/Internet_Relay_Chat)).
 4. Fully distributed - serverless/brokerless. Peers are discovered using [DHT](https://docs.ipfs.io/concepts/dht/), [pubsub](https://docs.libp2p.io/concepts/publish-subscribe/) and [mDNS](https://en.wikipedia.org/wiki/Multicast_DNS) (See [Peer discovery](#peer-discovery)). No need for any rendezvous server. Without any central server(s), `ipfs-chat` cannot be censored/blocked.
 5. Chat-messages are authenticated and end-to-end encrypted (See [Security](#security)). Shared files/directories are encrypted too.
-6. Developed with bandwidth, CPU and disk usage efficiency in mind.
+6. Developed with bandwidth, CPU and disk usage efficiency in mind. Option to control shared file size (See [Usage](#usage)).
 7. Written entirely in [Bash](https://www.gnu.org/software/bash/manual/bash.html); just a single shell-script. Apart from [go-ipfs](https://docs.ipfs.io/install/command-line/#official-distributions) and possibly `argon2`, depends only on standard GNU/Linux tools and tools that can be easily downloaded from the native package repository.
-8. For WSL, supports sharing Windows files or folders (through direct drag-n-drop) and downloading shared files in some Windows folder.
+8. For WSL, supports sharing Windows files or folders (through direct drag-n-drop). Also allows downloading shared files in a Windows folder (See [Usage](#usage)).
+9. Downloaded shared files are scanned for malicious intent (See [Security](#security) and  [Usage](#usage)).
+10. Auto-update enabled.
 
 ***Keywords*:** p2p; distributed; server-less; broker-less; TUI; secure; texting; file-sharing; ipfs; pubsub; privacy
 
@@ -36,7 +38,7 @@ Do you want an auto-install feature, such as `./ipfs-chat -i`? If so, please [po
 ## Usage
 
 ```shell
-ipfs-chat -r <room> -n <nick> -d <dl dir> -D <max dl MB> -c <repo> -o <log> -wle
+ipfs-chat -r <room> -n <nick> -d <dl dir> -D <max file MB> -c <repo> -o <log> -w|-l -e
 ipfs-chat -g # Generating a random room name, for when your brain can't do it
 ipfs-chat -v # Version
 ipfs-chat -u # Update
@@ -47,9 +49,9 @@ All command-line options/flags are optional. Unobvious options are explained bel
 
 `-c` passes the directory where `ipfs-chat` would host the IPFS node (repository); similar to the `-c` option in the `ipfs` cli. Unlike `ipfs` cli however, the environment variable `IPFS_PATH` has no effect.
 
-`-d` passes the directory where the files received from peers would be downloaded.
+`-d` passes the directory where the files received from peers would be downloaded. This can be a Windows folder (just drag-n-drop the folder in the command-line) for WSL.
 
-`-D` specifies the maximum size in MB for each shared file. Larger files are not downloaded. If the specified size is negative, it implies there is no maximum size.
+`-D` specifies the maximum size in MB for each shared file. Larger files are not downloaded/uploaded. If the specified size is negative, it implies there is no maximum size.
 
 `-o` passes the file where the chat from the present session would be logged.
 
@@ -57,7 +59,7 @@ All command-line options/flags are optional. Unobvious options are explained bel
 
 `-l` or `-L` denotes LAN-only mode. Peers are discovered only locally, no connection to the IPFS public network is formed over the internet (no bootstrap node, uses LAN-DHT). Saves resources when all chatroom peers are known to be present across LAN. Launches `ipfs-chat` faster when not connected to the internet.
 
-`-e` enables basic MIME-type check for the shared files. Suppose a malicious peer sends you an executable file but scrupulously gives it a .txt extension. `ipfs-chat` would add a .com or .exe extension to the file then. This feature is only available as long as there is a map of MIME-types to extensions at `/etc/mime.types` (e.g. in Debian & Ubuntu). This check is not always perfect - e.g. .md files are given an additional .asc or .txt extension. Hence, it is not enabled by default.
+`-e` enables basic MIME-type check for the shared files. Suppose a malicious peer sends you an executable file but scrupulously gives it a .txt extension. `ipfs-chat` would add a .com or .exe extension to the file then. This feature is only available as long as there is a map of MIME-types to extensions at `/etc/mime.types` (e.g. in Debian & Ubuntu). If your distribution doesn't have this map, install it at that path manually after downloading from [here](https://raw.githubusercontent.com/SomajitDey/ipfs-chat/main/mime.types).
 
 `-u` does a manual update of `ipfs-chat`. This option is not very necessary as `ipfs-chat` auto-updates whenever there is internet connection and it is not running in LAN-only mode.
 
@@ -68,6 +70,8 @@ room: `Salon`
 nick: `${USER}`
 
 download directory: `${HOME}/ipfs-chat-downloads`
+
+max shared file size:  -1 (i.e. unlimited)
 
 repo: `${HOME}/.ipfs-chat`
 
@@ -133,17 +137,15 @@ Also, if a peer sees a message (over pubsub) from a peer that it is not directly
 
 Authenticity of the messages is established through IPNS over pubsub (See [Messaging](#messaging)).
 
-All general messages are encrypted with a symmetric key (AES128) derived from the room name using HMAC.
+All general messages are encrypted with a symmetric key (AES128) derived from the room name using a key-derivation-function (kdf) based on [Argon2](https://github.com/P-H-C/phc-winner-argon2).
 
 All private messages are encrypted with a public key (ECDH/cv25519) belonging to the recipient.
 
 All shared files and directories are encrypted (See [File sharing](#file-sharing)).
 
-The pubsub topics are separate HMAC keys derived from the room name.
+The pubsub topics are separate keys derived from the room name. Therefore, the public network, that mediates the pubsub and passes the messages along, never knows the actual room name and hence, the encryption key.
 
-Therefore, the public network, that mediates the pubsub and passes the messages along, never knows the actual room name and hence, the encryption key.
-
-Before deriving the keys, the room name is itself hashed using a memory- and CPU-hard password-hashing algorithm ([Argon2](https://github.com/P-H-C/phc-winner-argon2)) [Not implemented yet].
+If the `-e` flag is provided, MIME-types of the shared files are checked against their extensions. This is to thwart an attacker sharing a malicious binary vested as a seemingly harmless filetype such as .doc. This check however requires a MIME types map to be present at `/etc/mime.types`. If your distribution doesn't have this map, it may be downloaded from [here](https://raw.githubusercontent.com/SomajitDey/ipfs-chat/main/mime.types).
 
 ## Messaging
 
@@ -207,7 +209,6 @@ Apart from its dependence on an array of bootstrap and relay-hop nodes, `ipfs-ch
 
 ## Future directions
 
-2. Using Argon2 for more security (See [Security](#security)).
 2. Refactor codebase.
 3. Detect and block malicious peers. All direct connections to blocked peers are culled. Users can also block (and unblock later) specific nicks (regex pattern), peer IDs. While blocking, users can opt for - 1. Block permanently; 2. For present session only. **TBD**: News of this blocking (who blocked whom and when) may or may not be published over pubsub for other peers to see and decide for themselves.
 4. Offline mode such that even if a peer goes offline, it can obtain the missed messages when it comes back online [This may well be beyond my capabilities]. Once [`orbit-db-cli`](https://github.com/orbitdb/orbit-db-cli) matures, it might help achieve this. Random idea: Online peers publish CIDs of time-based logs at regular intervals over pubsub. Logs are directories containing chats - one message in one file. Even if logs of two peers don't match exactly, they will have many files in common, thus achieving major deduplication and also helping availability across the ipfs-chat network.
