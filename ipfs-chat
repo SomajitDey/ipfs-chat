@@ -2,7 +2,7 @@
 # Details: See info and usage functions below
 # Warning: This code closes all background processes in the current terminal session on exit # TODO:
 
-export version="0.2.0 (alpha)"
+export version="0.2.1 (alpha)"
 
 info(){
   # Brief: Info about ipfs-chat
@@ -26,15 +26,37 @@ usage(){
   echo ; exit 1
 } >&2; export -f usage
 
+sha1(){
+  # Usage: sha1 <string> ##or## sha1 < path_to_data_file
+  local string="${@}"
+  if [[ -n "${string}" ]]; then
+    sha1sum <(echo -n "${string}")
+  else
+    sha1sum 
+  fi | cut -d ' ' -f 1
+}; export -f sha1
+
+b64(){
+  # Brief: Inline base64 encode with / replaced by _, and the trailing = dropped
+  # Deleting last = because base64 encoding 160-bit kdf or hmac always gives single =, hence redundant
+  # Substituting / with _ because / messes up using kdf/hmac outputs as directory or filenames
+  # Usage: b64 <hexdump>
+  xxd -r -p | base64 -w0 | tr -d '=' | tr '/' '_'
+}; export -f b64
+
+hmac(){
+  # Usage: hmac <salt> <string>
+  # Output: base64, with / replaced by _, and trailing = dropped
+  local key="$(sha1 "${1}")" data="$(sha1 "${2}")"
+  echo -n "${data}" | xxd -r -p | openssl dgst -sha1 -mac hmac -macopt hexkey:"${key}" | cut -d ' ' -f 2 | b64
+}; export -f hmac
+
 kdf(){
   # Usage: kdf <salt> <string>
   # Output: 160-bit base64 key, with / replaced by _, and the trailing = dropped
-  sha1(){ sha1sum <(echo -n "${1}") | cut -d ' ' -f 1;} # Usage: sha1 <string>
   local key="$(sha1 "${1}")" data="${2}"
   # No-need to lose `data` bits by prehashing. Hashing `key` ensures argon2 salt is atleast 8 characters long.
-  echo -n "${data}" | argon2 "${key}" -t 4 -m 14 -p 1 -l 20 -r | xxd -r -p | base64 -w0 | tr -d '=' | tr '/' '_'
-  # Deleting last = because base64 encoding 160-bit kdf always gives single =, hence redundant
-  # Substituting / with _ because / messes up using kdf outputs as directory or filenames
+  echo -n "${data}" | argon2 "${key}" -t 3 -m 12 -p 1 -l 20 -r | b64
 }; export -f kdf
 
 dep_check(){
@@ -85,6 +107,18 @@ dep_check(){
 
 dep_check
 
+win2lin_path(){
+  # Brief: Convert Windows to Linux path. If Linux path is given, does tilde expansion & quote removal.
+  # Usage: win2lin_path <path> ##or## win2lin_path < file_containing_path
+  # The input can be formatted freely. Path may contain spaces not esacaped by \. Quotes may or may not be used for Win paths
+  local input="${@}"; [[ -n "${input}" ]] || read -r input # Backslash not special due to -r
+  if ! [[ "${input}" == ~* ]]; then
+    local quote_less="$(echo "${input//\\/\\\\}" | xargs)" # xargs does quote removal. To save backslash, escaped 'em
+    wslpath "${quote_less}" 2>/dev/null && return
+  fi
+  eval echo "${input}" # eval does tilde-expansion
+}; export -f win2lin_path
+
 update(){
   # Usage: update [-s <update-from-file-path>] [-d <download-to-file-path>] [git-branch]
   # Note: If -d, it only downloads the latest version to the given location, doesn't update
@@ -126,10 +160,10 @@ parse_cmdline(){
     case "${opt}" in
       n) nick="${OPTARG}";;
       r) room="${OPTARG}";;
-      d) local wsl_path="$(wslpath "${OPTARG}" 2>/dev/null)"; dldir="${wsl_path:-"${OPTARG}"}";;
+      d) dldir="$(win2lin_path "${OPTARG}")";;
       D) max_dl_MB="${OPTARG}";;
       c) local repo="${OPTARG}";;
-      g) echo -n "Random room: " >&2; dd if=/dev/urandom count=1 bs=6 2>/dev/null | base64; exit;;
+      g) echo -n "Random room: " >&2; dd if=/dev/urandom count=1 bs=6 2>/dev/null | base64 | tr '/' '%'; exit;;
       w|W) export connect_mode="WAN";;
       l|L) export connect_mode="LAN";;
       o) export chat="${OPTARG}";;
@@ -185,7 +219,8 @@ ipfs_config(){
   export global_fs="${HOME}/.filestore-ipfs-chat" # For multinode deduplication. UL files named after SHA1, DL files after CID
   mkdir -p "${global_fs}"; local global_fs_MB="$(du -BM "${global_fs}" | awk '{print $1}' | tr -d M)"
   # Cleanup global cache when disk usage exceeds 1 GB
-  if ((global_fs_MB > 1024)); then
+  # ICGFS: IPFS_CHAT_GLOBAL_FILESTORE_SIZE in MB (type: integer)
+  if ((global_fs_MB > "${ICGFS:=1024}")); then
     flock -n "${global_fs}" rm -rf "${global_fs}"/*
   fi
   
@@ -235,6 +270,7 @@ ipfs_config(){
     sleep 0.1
   done &>/dev/null
   echo "$(tput ed)Status: IPFS node is configured"
+  declare -rigx daemon_launch_time="${EPOCHSECONDS}"
   
   export selfID="$(ipfs config Identity.PeerID)"
   export topic="$(kdf "ipfs-chat" "${room}")" broadcast="$(kdf "peer-addresses" "${room}")"
@@ -348,7 +384,7 @@ peer_pubkey_nick(){
     # Check size of file before download to avoid spam. Pubkey is 669 bytes to be exact. Add some grace for nick etc.
     (("$(ipfs files stat --size "${ipfs_path}" || 1001)" < 1000)) || return 1
     gnupg --yes --no-default-keyring --keyring "${peer_kbx}" --delete-keys "${peerID}"
-    flock "${peer_pubkey}" ipfs get -o "${peer_pubkey}" "${ipfs_path}" && \
+    flock "${peer_pubkey}" ipfs get -o "${peer_pubkey}" "${ipfs_path}" && ipfs pin add "${ipfs_path}" && \
     gnupg --no-default-keyring --keyring "${peer_kbx}" --import "${peer_pubkey}" || rm -f "${peer_pubkey}"
   fi &>/dev/null
   tail -n1 "${peer_pubkey}"
@@ -383,7 +419,9 @@ file_unpack(){
     ipfs cat "${cid}" | openssl enc -aes128 -pass pass:"${dec_hash}" -nosalt -a -A -d -out "${buffer}" && \
       mv "${buffer}" "${cache}" && ipfs pin add "${cid}"
   fi
-  ln --backup=numbered "${cache}" "${dlpath}$(check_mime_type "${cache}" "${dlpath}")"
+  local mime_ext="$(check_mime_type "${cache}" "${dlpath}")"
+  ln --backup=numbered "${cache}" "${dlpath}${mime_ext}" || \
+    cp --backup=numbered "${cache}" "${dlpath}${mime_ext}"
 } &>/dev/null 3>"${dl_lock}"; export -f file_unpack
 
 subscriber_daemon(){
@@ -411,6 +449,7 @@ subscriber_daemon(){
     prefix="${prefix}${sender} @${peerID:${#peerID}-6:6} ${timestamp} -- "
     flock "${chat}" cat <(echo -n "${prefix}") <(tail -n+2 "${buffer}") <(echo -e \\n) | lwrap >> "${chat}"
     if [[ -n "${dec_hash}" ]]; then
+      [[ "${peerID}" != "${selfID}" ]] || [[ "${recipID}" == "${selfID}" ]] || exit 1
       eval filename="$(awk NR==2 "${buffer}" | cut -d ' ' -f 3-)" # eval is for quote removal
       file_unpack "${dec_hash}" "${CID}" "${filename}" || \
         flock "${chat}" echo -e "Download failed -- ${filename}\n" | lwrap >> "${chat}"
@@ -446,15 +485,17 @@ con_cull(){
   done
 } &>/dev/null; export -f con_cull
 
+declare -irx ICPDI="${ICPDI:=30}" # IPFS_CHAT_PEER_DISCOVERY_INTERVAL in seconds (type: integer)
+
 peering_daemon(){
   # Brief: Discover & connect to chat-peers & announce self for others to discover - at regular intervals
   local peerID peer_nick peerID_list="$(tmpgen)" buffer="$(tmpgen)"
+  local -a dht_ops_pid
   while ipfs swarm peers &>/dev/null;do # Do as long as IPFS daemon is alive
-    local dht_ops_pid=() # Stores pid's of background DHT operations executing in the current pass
+    dht_ops_pid=() # Stores pid's of background DHT operations executing in the current pass
     local timestamp="${EPOCHSECONDS}" # Current Unix time
     ipfs pubsub pub "${broadcast}" "$(ipfs id "${selfID}" -f="<addrs>\n")" & # Announce own multiaddresses
-    local nonce="$(kdf "${room}" "$((timestamp/120))" | ipfs add -Q --stdin-name='Rendezvous')" # Announce time based nonce
-    ipfs pin rm "${nonce}" &>/dev/null & # Otherwise reprovider will continue announcing stale nonce. Pin still necessary to save from auto-GC
+    local nonce="$(hmac "${broadcast}" "$((timestamp/120))" | ipfs add -Q --stdin-name='Rendezvous')" # Announce time based nonce
     sort -u <(ipfs pubsub peers "${topic}") <(timeout 5 ipfs dht findprovs "${nonce}") > "${peerID_list}" # Peer discovery. TODO: Need a slower one?
     for peerID in $(cat "${peerID_list}"); do # Connecting to peers and importing their pubkeys
       (cache_peer "${peerID}"
@@ -465,11 +506,12 @@ peering_daemon(){
       local dht_ops_pid+=($!)
     done
     wait ${dht_ops_pid[@]} # Wait till all DHT operations are complete
+    ipfs pin rm "${nonce}" &>/dev/null & # Otherwise reprovider will continue announcing stale nonce. Pin still necessary to save from auto-GC
     sort -o "${buffer}" "${buffer}" && mv "${buffer}" "${peers}" # In-place sort followed by atomic move
-    con_cull # Need for DHT is over for now. So, let's cull unnecessary connections to reduce bandwidth usage.
+    con_cull & # Need for DHT is over for now. So, let's cull unnecessary connections to reduce bandwidth usage.
     safe_gc "${dl_lock}" & # Remove irrelevant blocks in bg
     # Lockfile makes sure this is not run during file download, as otherwise downloaded but yet unpinned blocks might be GCd
-    sleep "$((30-EPOCHSECONDS+timestamp))" 2>/dev/null # TBD: 30s or less? Redirection for when the sleep time is negative
+    sleep "$((ICPDI-EPOCHSECONDS+timestamp))" 2>/dev/null # Redirection for when the sleep time is negative
   done  
 } &>"${tmpdir}/peering_daemon.log"; export -f peering_daemon
 
@@ -480,17 +522,16 @@ file_pack(){
   # Usage: file_pack <file containing the path of the file to be shared> # This is just for simplicity of `send` code below
   # This function also replaces the path present in the given file with just the filename
   local msg="${1}" path filename
-  local wsl_path="$(xargs -a "${msg}" wslpath 2>/dev/null)"
-  eval path="${wsl_path:-"$(cat "${msg}")"}" # eval to remove double/single quote(s)
+  path="$(win2lin_path < "${msg}")"
   if [[ -f "${path}" ]]; then
     filename="${path##*/}"
   elif [[ -d "${path}" ]]; then
-    local dir="${path}"; path="$(tmpgen)"; tar --create --file="${path}" "${dir}"
+    local dir="${path}"; path="$(tmpgen)"; tar -czf "${path}" "${dir}"
     filename="${dir##*/}.tar.gz"
   else
     return 0    
   fi
-  local enc_hash="$(sha1sum -b "${path}" | cut -d' ' -f1 | xxd -r -p | base64 -w 0 | tr -d '=' | tr '/' '_')"
+  local enc_hash="$(sha1sum -b "${path}" | cut -d' ' -f1 | b64)"
   if ! grep -m1 "${enc_hash}" "${sess_uplds}"; then
     local cache="${global_fs}/${enc_hash}"
     [[ -f "${cache}" ]] || openssl enc -aes128 -pass pass:"${enc_hash}" -nosalt -a -A -in "${path}" -out "${cache}"
@@ -547,7 +588,7 @@ ui(){
     fi # Conditionality decreases lag between pressing Send and subsequent chatbox update
     local input_help="\Zb\Z4Nick: \Zu\Z0${nick}\Zn \Zb\Z4peerID: \Zu\Z0@${selfID:${#selfID}-6:6}\Zn
 \Zb\Z4General-Message:\Z1 Simply type in your text & press Enter or Send\Zn
-\Zb\Z4Fle-sharing:\Z2 Drag-n-drop file or directory, or type in its path\Zn
+\Zb\Z4Fle-sharing:\Z2 Drag-n-drop file or directory, or use the File explorer button, or type in path\Zn
 \Zb\Z4Private-Message:\Z5 Put recipient's @peerID followed by a space before your text or file-path\Zn"
     dialog --keep-tite \
       --title "ipfs-chat-room: ${room}" --begin 0 0 --tailboxbg "${chat}" "${win12_height}" "${win1_width}" \
@@ -555,7 +596,7 @@ ui(){
       --title "online-peers" --begin 0 "${win1_width}" --tailboxbg "${peers}" "${win12_height}" "${win2_width}" \
       --and-widget --colors \
       --no-shadow --title "Press Esc to exit" --begin "$((tty_height-win3_height))" 0 \
-      --ok-label "Send" --cancel-label "Clear" \
+      --ok-label "Send" --cancel-label "File explorer" \
       --extra-button --extra-label "Inspect chat" \
       --help-button --help-label "Inspect peers" \
       --inputbox "${input_help}" "${win3_height}" "${win3_width}" \
@@ -563,7 +604,11 @@ ui(){
       local exit_code=$?
       case "${exit_code}" in
         0) send ;; # Button: Send
-        1) continue ;; # Button: Clear
+        1) # Button: Clear
+           dialog --keep-tite --title "Press Spacebar to autocomplete or select/copy" --begin 0 0 \
+           --fselect "${PWD}" "${win12_height}" "${tty_width}" 2> "${input}" \
+           && send
+           ;;
         2) # Button: Inspect peers
            dialog --keep-tite --no-shadow --exit-label "Back"\
            --title "online-peers" --begin 0 0 --textbox "${peers}" "${tty_height}" "${tty_width}"
@@ -592,7 +637,8 @@ ui(){
 
 echo "Status: Launching UI...(If it takes a long time to open, try pressing Enter)" >&2; ui
 
-[[ -v disable_bandwidth_metrics ]] && echo "Stats: $(ipfs stats bw | head -n3)" >&2
+[[ -v disable_bandwidth_metrics ]] && \
+  echo -e "Stats: $(ipfs stats bw | head -n3)\nTime: $((EPOCHSECONDS-daemon_launch_time))s" >&2
 
 if [[ -x "${code}" ]] && updateto="$(${code} -v 2>/dev/null)" && [[ "${updateto}" != "${version}" ]]; then
   confirm_update="Update ipfs-chat from v${version} to v${updateto}?"
