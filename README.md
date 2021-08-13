@@ -49,7 +49,7 @@ All command-line options/flags are optional. Unobvious options are explained bel
 
 `-c` passes the directory where `ipfs-chat` would host the IPFS node (repository); similar to the `-c` option in the `ipfs` cli. Unlike `ipfs` cli however, the environment variable `IPFS_PATH` has no effect.
 
-`-d` passes the directory where the files received from peers would be downloaded. This can be a Windows folder (just drag-n-drop the folder in the command-line) for WSL.
+`-d` passes the directory where the files received from peers would be downloaded. This can be a Windows folder (just drag-n-drop the folder in the command-line, within quotes) for WSL.
 
 `-D` specifies the maximum size in MB for each shared file. Larger files are not downloaded/uploaded. If the specified size is negative, it implies there is no maximum size.
 
