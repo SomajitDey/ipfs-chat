@@ -163,7 +163,7 @@ parse_cmdline(){
       d) dldir="$(win2lin_path "${OPTARG}")";;
       D) max_dl_MB="${OPTARG}";;
       c) local repo="${OPTARG}";;
-      g) echo -n "Random room: " >&2; dd if=/dev/urandom count=1 bs=6 2>/dev/null | base64; exit;;
+      g) echo -n "Random room: " >&2; dd if=/dev/urandom count=1 bs=6 2>/dev/null | base64 | tr '/' '%'; exit;;
       w|W) export connect_mode="WAN";;
       l|L) export connect_mode="LAN";;
       o) export chat="${OPTARG}";;
@@ -511,7 +511,7 @@ peering_daemon(){
     con_cull & # Need for DHT is over for now. So, let's cull unnecessary connections to reduce bandwidth usage.
     safe_gc "${dl_lock}" & # Remove irrelevant blocks in bg
     # Lockfile makes sure this is not run during file download, as otherwise downloaded but yet unpinned blocks might be GCd
-    sleep "$((ICPDI-EPOCHSECONDS+timestamp))" 2>/dev/null # TBD: 30s or less? Redirection for when the sleep time is negative
+    sleep "$((ICPDI-EPOCHSECONDS+timestamp))" 2>/dev/null # Redirection for when the sleep time is negative
   done  
 } &>"${tmpdir}/peering_daemon.log"; export -f peering_daemon
 
