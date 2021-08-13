@@ -26,15 +26,37 @@ usage(){
   echo ; exit 1
 } >&2; export -f usage
 
+sha1(){
+  # Usage: sha1 <string> ##or## sha1 < path_to_data_file
+  local string="${@}"
+  if [[ -n "${string}" ]]; then
+    sha1sum <(echo -n "${string}")
+  else
+    sha1sum 
+  fi | cut -d ' ' -f 1
+}; export -f sha1
+
+b64(){
+  # Brief: Inline base64 encode with / replaced by _, and the trailing = dropped
+  # Deleting last = because base64 encoding 160-bit kdf or hmac always gives single =, hence redundant
+  # Substituting / with _ because / messes up using kdf/hmac outputs as directory or filenames
+  # Usage: b64 <hexdump>
+  xxd -r -p | base64 -w0 | tr -d '=' | tr '/' '_'
+}; export -f b64
+
+hmac(){
+  # Usage: hmac <salt> <string>
+  # Output: base64, with / replaced by _, and trailing = dropped
+  local key="$(sha1 "${1}")" data="$(sha1 "${2}")"
+  echo -n "${data}" | xxd -r -p | openssl dgst -sha1 -mac hmac -macopt hexkey:"${key}" | cut -d ' ' -f 2 | b64
+}; export -f hmac
+
 kdf(){
   # Usage: kdf <salt> <string>
   # Output: 160-bit base64 key, with / replaced by _, and the trailing = dropped
-  sha1(){ sha1sum <(echo -n "${1}") | cut -d ' ' -f 1;} # Usage: sha1 <string>
   local key="$(sha1 "${1}")" data="${2}"
   # No-need to lose `data` bits by prehashing. Hashing `key` ensures argon2 salt is atleast 8 characters long.
-  echo -n "${data}" | argon2 "${key}" -t 4 -m 14 -p 1 -l 20 -r | xxd -r -p | base64 -w0 | tr -d '=' | tr '/' '_'
-  # Deleting last = because base64 encoding 160-bit kdf always gives single =, hence redundant
-  # Substituting / with _ because / messes up using kdf outputs as directory or filenames
+  echo -n "${data}" | argon2 "${key}" -t 4 -m 14 -p 1 -l 20 -r | b64
 }; export -f kdf
 
 dep_check(){
@@ -197,7 +219,8 @@ ipfs_config(){
   export global_fs="${HOME}/.filestore-ipfs-chat" # For multinode deduplication. UL files named after SHA1, DL files after CID
   mkdir -p "${global_fs}"; local global_fs_MB="$(du -BM "${global_fs}" | awk '{print $1}' | tr -d M)"
   # Cleanup global cache when disk usage exceeds 1 GB
-  if ((global_fs_MB > 1024)); then
+  # ICGFS: IPFS_CHAT_GLOBAL_FILESTORE_SIZE in MB (type: integer)
+  if ((global_fs_MB > "${ICGFS:=1024}")); then
     flock -n "${global_fs}" rm -rf "${global_fs}"/*
   fi
   
@@ -247,6 +270,7 @@ ipfs_config(){
     sleep 0.1
   done &>/dev/null
   echo "$(tput ed)Status: IPFS node is configured"
+  declare -rigx daemon_launch_time="${EPOCHSECONDS}"
   
   export selfID="$(ipfs config Identity.PeerID)"
   export topic="$(kdf "ipfs-chat" "${room}")" broadcast="$(kdf "peer-addresses" "${room}")"
@@ -360,7 +384,7 @@ peer_pubkey_nick(){
     # Check size of file before download to avoid spam. Pubkey is 669 bytes to be exact. Add some grace for nick etc.
     (("$(ipfs files stat --size "${ipfs_path}" || 1001)" < 1000)) || return 1
     gnupg --yes --no-default-keyring --keyring "${peer_kbx}" --delete-keys "${peerID}"
-    flock "${peer_pubkey}" ipfs get -o "${peer_pubkey}" "${ipfs_path}" && \
+    flock "${peer_pubkey}" ipfs get -o "${peer_pubkey}" "${ipfs_path}" && ipfs pin add "${ipfs_path}" && \
     gnupg --no-default-keyring --keyring "${peer_kbx}" --import "${peer_pubkey}" || rm -f "${peer_pubkey}"
   fi &>/dev/null
   tail -n1 "${peer_pubkey}"
@@ -461,15 +485,17 @@ con_cull(){
   done
 } &>/dev/null; export -f con_cull
 
+declare -irx ICPDI="${ICPDI:=30}" # IPFS_CHAT_PEER_DISCOVERY_INTERVAL in seconds (type: integer)
+
 peering_daemon(){
   # Brief: Discover & connect to chat-peers & announce self for others to discover - at regular intervals
   local peerID peer_nick peerID_list="$(tmpgen)" buffer="$(tmpgen)"
+  local -a dht_ops_pid
   while ipfs swarm peers &>/dev/null;do # Do as long as IPFS daemon is alive
-    local dht_ops_pid=() # Stores pid's of background DHT operations executing in the current pass
+    dht_ops_pid=() # Stores pid's of background DHT operations executing in the current pass
     local timestamp="${EPOCHSECONDS}" # Current Unix time
     ipfs pubsub pub "${broadcast}" "$(ipfs id "${selfID}" -f="<addrs>\n")" & # Announce own multiaddresses
-    local nonce="$(kdf "${room}" "$((timestamp/120))" | ipfs add -Q --stdin-name='Rendezvous')" # Announce time based nonce
-    ipfs pin rm "${nonce}" &>/dev/null & # Otherwise reprovider will continue announcing stale nonce. Pin still necessary to save from auto-GC
+    local nonce="$(hmac "${broadcast}" "$((timestamp/120))" | ipfs add -Q --stdin-name='Rendezvous')" # Announce time based nonce
     sort -u <(ipfs pubsub peers "${topic}") <(timeout 5 ipfs dht findprovs "${nonce}") > "${peerID_list}" # Peer discovery. TODO: Need a slower one?
     for peerID in $(cat "${peerID_list}"); do # Connecting to peers and importing their pubkeys
       (cache_peer "${peerID}"
@@ -480,11 +506,12 @@ peering_daemon(){
       local dht_ops_pid+=($!)
     done
     wait ${dht_ops_pid[@]} # Wait till all DHT operations are complete
+    ipfs pin rm "${nonce}" &>/dev/null & # Otherwise reprovider will continue announcing stale nonce. Pin still necessary to save from auto-GC
     sort -o "${buffer}" "${buffer}" && mv "${buffer}" "${peers}" # In-place sort followed by atomic move
-    con_cull # Need for DHT is over for now. So, let's cull unnecessary connections to reduce bandwidth usage.
+    con_cull & # Need for DHT is over for now. So, let's cull unnecessary connections to reduce bandwidth usage.
     safe_gc "${dl_lock}" & # Remove irrelevant blocks in bg
     # Lockfile makes sure this is not run during file download, as otherwise downloaded but yet unpinned blocks might be GCd
-    sleep "$((30-EPOCHSECONDS+timestamp))" 2>/dev/null # TBD: 30s or less? Redirection for when the sleep time is negative
+    sleep "$((ICPDI-EPOCHSECONDS+timestamp))" 2>/dev/null # TBD: 30s or less? Redirection for when the sleep time is negative
   done  
 } &>"${tmpdir}/peering_daemon.log"; export -f peering_daemon
 
@@ -504,7 +531,7 @@ file_pack(){
   else
     return 0    
   fi
-  local enc_hash="$(sha1sum -b "${path}" | cut -d' ' -f1 | xxd -r -p | base64 -w 0 | tr -d '=' | tr '/' '_')"
+  local enc_hash="$(sha1sum -b "${path}" | cut -d' ' -f1 | b64)"
   if ! grep -m1 "${enc_hash}" "${sess_uplds}"; then
     local cache="${global_fs}/${enc_hash}"
     [[ -f "${cache}" ]] || openssl enc -aes128 -pass pass:"${enc_hash}" -nosalt -a -A -in "${path}" -out "${cache}"
@@ -610,7 +637,8 @@ ui(){
 
 echo "Status: Launching UI...(If it takes a long time to open, try pressing Enter)" >&2; ui
 
-[[ -v disable_bandwidth_metrics ]] && echo "Stats: $(ipfs stats bw | head -n3)" >&2
+[[ -v disable_bandwidth_metrics ]] && \
+  echo -e "Stats: $(ipfs stats bw | head -n3)\nTime: $((EPOCHSECONDS-daemon_launch_time))s" >&2
 
 if [[ -x "${code}" ]] && updateto="$(${code} -v 2>/dev/null)" && [[ "${updateto}" != "${version}" ]]; then
   confirm_update="Update ipfs-chat from v${version} to v${updateto}?"
