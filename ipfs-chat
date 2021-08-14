@@ -496,18 +496,22 @@ peering_daemon(){
     local timestamp="${EPOCHSECONDS}" # Current Unix time
     ipfs pubsub pub "${broadcast}" "$(ipfs id "${selfID}" -f="<addrs>\n")" & # Announce own multiaddresses
     local nonce="$(hmac "${broadcast}" "$((timestamp/120))" | ipfs add -Q --stdin-name='Rendezvous')" # Announce time based nonce
-    sort -u <(ipfs pubsub peers "${topic}") <(timeout 5 ipfs dht findprovs "${nonce}") > "${peerID_list}" # Peer discovery. TODO: Need a slower one?
-    for peerID in $(cat "${peerID_list}"); do # Connecting to peers and importing their pubkeys
+
+    : > "${peerID_list}" # Would store peerIDs seen in this pass
+    while read peerID; do # Connecting to peers and importing their latest pubkeys
+      grep -q "${peerID}" "${peerID_list}" && continue # peerID handled already, so move on
+      echo "${peerID}" >> "${peerID_list}" # Add to list so that other iterations won't handle this peerID again
       (cache_peer "${peerID}"
       peer_nick="$(peer_pubkey_nick -n "${peerID}")" || exit 1
       local peer_buff="${peer_nick} @${peerID:${#peerID}-6:6}"
       grep -xq "${peer_buff}" "${peers}" || flock "${peers}" echo "${peer_buff}" >> "${peers}"
       flock "${buffer}" echo "${peer_buff}" >> "${buffer}")& # Non-blocking. Notice the nocache flag -n forcing IPNS update
       local dht_ops_pid+=($!)
-    done
+    done < <(cat <(ipfs pubsub peers "${topic}") <(timeout 5 ipfs dht findprovs "${nonce}")) # Makes things concurrent
+
     wait ${dht_ops_pid[@]} # Wait till all DHT operations are complete
-    ipfs pin rm "${nonce}" &>/dev/null & # Otherwise reprovider will continue announcing stale nonce. Pin still necessary to save from auto-GC
     sort -o "${buffer}" "${buffer}" && mv "${buffer}" "${peers}" # In-place sort followed by atomic move
+    ipfs pin rm "${nonce}" &>/dev/null & # Otherwise reprovider will continue announcing stale nonce. Pin still necessary to save from auto-GC
     con_cull & # Need for DHT is over for now. So, let's cull unnecessary connections to reduce bandwidth usage.
     safe_gc "${dl_lock}" & # Remove irrelevant blocks in bg
     # Lockfile makes sure this is not run during file download, as otherwise downloaded but yet unpinned blocks might be GCd
