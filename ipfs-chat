@@ -2,7 +2,7 @@
 # Details: See info and usage functions below
 # Warning: This code closes all background processes in the current terminal session on exit # TODO:
 
-export version="0.2.1 (alpha)"
+export version="0.2.2 (alpha)"
 
 info(){
   # Brief: Info about ipfs-chat
@@ -305,8 +305,9 @@ config(){
   mkdir "${tmpdir}" 2>/dev/null || { echo "Error: Another instance running"; exit 1;}
   tmpgen(){ mktemp "${tmpdir}/.XXXXX";}; export -f tmpgen
 
-  export chat="${chat:-"${tmpdir}/chat"}" peers="${tmpdir}/peers" input="${tmpdir}/input" dl_lock="${tmpdir}/dl.lock"
-  :>"${chat}"; :>"${peers}"; :>"${input}" # Clear files: Redirected no-op
+  export chat="${chat:-"${tmpdir}/chat"}"; :>"${chat}" # Redirected no-op to clear file
+  export peers="${tmpdir}/peers"; :>"${peers}" # File must exist for `dialog` to show through its tailbox
+  export peers_buffer="${tmpdir}/peers.buffer" input="${tmpdir}/input" dl_lock="${tmpdir}/dl.lock"
 
   export code="${tmpdir}/latest_version"
   [[ "${connect_mode}" != LAN ]] && update -d "${code}" &>/dev/null &
@@ -357,26 +358,35 @@ identity || { echo "Error: Failed to generate key-pair" >&2; exit 1;}
 cache_peer(){
   # Brief: Cache peerID or multiaddress given as argument. The cache will be used by con_cull
   local peerID="${1}"
-  grep -q "${peerID}" "${sess_peers}" || flock "${sess_peers}" echo "${peerID}" >> "${sess_peers}"
+  grep -q -m1 "${peerID}" "${sess_peers}" || flock "${sess_peers}" echo "${peerID}" >> "${sess_peers}"
 } &>/dev/null; export -f cache_peer
 
 connect_peer(){
-  # Brief: Connect to peer ID provided as argument
-  local peerID="${1}" multiaddress
-  [[ "${peerID}" != "${selfID}" ]] || return 1
-  ipfs swarm connect "/p2p/${peerID}" || return 1
-  for multiaddress in $(ipfs swarm peers | grep "${peerID}"); do
+  # Brief: Connect to peer ID or multiaddress provided as argument
+  # TODO: Simplify and economize
+  local input="${1}" peerID="${1##*/}" multiaddress
+  if [[ "${peerID}" != "${input}" ]]; then
+    multiaddress="${input}"
+  else
+    multiaddress="/p2p/${peerID}"
+  fi
+  if [[ "${peerID}" == "${selfID}" ]] || (ipfs swarm peers | grep -q -m1 "${peerID}") || ipfs swarm connect "${multiaddress}"; then
+    for multiaddress in $(ipfs swarm peers | grep "${peerID}"); do
+      cache_peer "${multiaddress}" # Add multiaddress of both peer and any relay it is accessed through
+    done
+  else
     cache_peer "${multiaddress}"
-  done
+  fi
 } &>/dev/null; export -f connect_peer
 
 peer_pubkey_nick(){
-  # Brief: Import pubkey of peer ID passed as argument and output its nick. Flag -n to force IPNS update (nocache).
+  # Brief: Import pubkey of peer ID or multiaddress passed as argument and output its nick. Flag -n to force IPNS update (nocache).
   # TODO: TBD: peer_pubkey=CID_peerID
   local OPTIND=1 opt nocache
   getopts n opt; [[ "${opt}" == "n" ]] && nocache="--nocache"
-  local peerID="${!OPTIND}"
-  connect_peer "${peerID}" & # Non-blocking
+  local multiaddress="${!OPTIND}"
+  local peerID="${multiaddress##*/}" peer_nick
+  connect_peer "${multiaddress}"
   local ipfs_path="$(i=0; until ipfs name resolve ${nocache} "/ipns/${peerID}" || ((i>5));do ((i++)); done)"
   [[ -n "${ipfs_path}" ]] || return 1
   local peer_pubkey="${tmpdir}/${ipfs_path##*/}"
@@ -387,7 +397,14 @@ peer_pubkey_nick(){
     flock "${peer_pubkey}" ipfs get -o "${peer_pubkey}" "${ipfs_path}" && ipfs pin add "${ipfs_path}" && \
     gnupg --no-default-keyring --keyring "${peer_kbx}" --import "${peer_pubkey}" || rm -f "${peer_pubkey}"
   fi &>/dev/null
-  tail -n1 "${peer_pubkey}"
+  if peer_nick="$(tail -n1 "${peer_pubkey}")"; then
+    local peer_buff="${peer_nick} @${peerID:${#peerID}-6:6}"
+    grep -q -m1 "${peer_buff}" "${peers}" || flock "${peers}" echo "${peer_buff}" >> "${peers}"
+    grep -q -m1 "${peer_buff}" "${peers_buffer}" || flock "${peers_buffer}" echo "${peer_buff}" >> "${peers_buffer}"
+    echo "${peer_buff}"
+  else
+    return 1
+  fi
 } 2>/dev/null ; export -f peer_pubkey_nick
 
 check_mime_type(){
@@ -429,7 +446,6 @@ subscriber_daemon(){
   # TODO: Malicious peer detection and blocking.
   local timestamp CID peerID readbuff recipID sender buffer="$(tmpgen)" gpg_stderr="$(tmpgen)" prefix
   while read -r peerID readbuff recipID;do
-    cache_peer "${peerID}"
     (sender="$(peer_pubkey_nick "${peerID}")" || exit 1 # Note absence of -n flag in peer_pubkey_nick
     case "${recipID}" in
       all) 
@@ -446,7 +462,7 @@ subscriber_daemon(){
     grep -xq '[[:print:]]*' "${buffer}" || exit 1 # Check msg is text only to avoid spam
     read timestamp dec_hash CID < <(head -n1 "${buffer}" | grep -xE '[[:digit:]]*[[:blank:]]([[:alnum:]+_]*[[:blank:]][[:alnum:]]*)?')
     timestamp="$(date -d @${timestamp} +"%a %H:%M:%S")" || exit 1
-    prefix="${prefix}${sender} @${peerID:${#peerID}-6:6} ${timestamp} -- "
+    prefix="${prefix}${sender} ${timestamp} -- "
     flock "${chat}" cat <(echo -n "${prefix}") <(tail -n+2 "${buffer}") <(echo -e \\n) | lwrap >> "${chat}"
     if [[ -n "${dec_hash}" ]]; then
       [[ "${peerID}" != "${selfID}" ]] || [[ "${recipID}" == "${selfID}" ]] || exit 1
@@ -465,9 +481,7 @@ pubsub_conn(){
   local multiaddress peerID
   while read -r multiaddress;do
     peerID="${multiaddress##*/}"
-    cache_peer "${multiaddress}"
-    [[ "${peerID}" == "${selfID}" ]] || (ipfs swarm peers | grep -q "${peerID}") || ipfs swarm connect "${multiaddress}"
-    # TODO: TBD: & (bg) or not?
+    [[ "${peerID}" == "${selfID}" ]] || peer_pubkey_nick "${multiaddress}" # TODO: TBD: & (bg) or not?
   done < <(ipfs pubsub sub "${broadcast}" | grep --line-buffered -x '[[:alnum:]/.:-]*')
 } &>"${tmpdir}/pubsub_conn.log"; export -f pubsub_conn
 
@@ -489,33 +503,36 @@ declare -irx ICPDI="${ICPDI:=30}" # IPFS_CHAT_PEER_DISCOVERY_INTERVAL in seconds
 
 peering_daemon(){
   # Brief: Discover & connect to chat-peers & announce self for others to discover - at regular intervals
-  local peerID peer_nick peerID_list="$(tmpgen)" buffer="$(tmpgen)"
+  local peerID peer_nick
   local -a dht_ops_pid
+  local -A peerID_list # Associative array
+
+  local -r start_peer_discov="${EPOCHSECONDS}"
   while ipfs swarm peers &>/dev/null;do # Do as long as IPFS daemon is alive
     dht_ops_pid=() # Stores pid's of background DHT operations executing in the current pass
     local timestamp="${EPOCHSECONDS}" # Current Unix time
-    ipfs pubsub pub "${broadcast}" "$(ipfs id "${selfID}" -f="<addrs>\n")" & # Announce own multiaddresses
     local nonce="$(hmac "${broadcast}" "$((timestamp/120))" | ipfs add -Q --stdin-name='Rendezvous')" # Announce time based nonce
 
-    : > "${peerID_list}" # Would store peerIDs seen in this pass
+    peerID_list=() # Would store peerIDs seen in this pass
     while read peerID; do # Connecting to peers and importing their latest pubkeys
-      grep -q "${peerID}" "${peerID_list}" && continue # peerID handled already, so move on
-      echo "${peerID}" >> "${peerID_list}" # Add to list so that other iterations won't handle this peerID again
-      (cache_peer "${peerID}"
-      peer_nick="$(peer_pubkey_nick -n "${peerID}")" || exit 1
-      local peer_buff="${peer_nick} @${peerID:${#peerID}-6:6}"
-      grep -xq "${peer_buff}" "${peers}" || flock "${peers}" echo "${peer_buff}" >> "${peers}"
-      flock "${buffer}" echo "${peer_buff}" >> "${buffer}")& # Non-blocking. Notice the nocache flag -n forcing IPNS update
+      ((peerID_list["${peerID}"] != 1)) || continue # peerID handled already, so move on
+      peerID_list["${peerID}"]=1 # Add to list so that other iterations won't handle this peerID again
+      peer_pubkey_nick -n "${peerID}" &>/dev/null & # Non-blocking. Notice the nocache flag -n forcing IPNS update
       local dht_ops_pid+=($!)
     done < <(cat <(ipfs pubsub peers "${topic}") <(timeout 5 ipfs dht findprovs "${nonce}")) # Makes things concurrent
 
-    wait ${dht_ops_pid[@]} # Wait till all DHT operations are complete
-    sort -o "${buffer}" "${buffer}" && mv "${buffer}" "${peers}" # In-place sort followed by atomic move
+    wait "${dht_ops_pid[@]}" # Wait till all DHT operations are complete
     ipfs pin rm "${nonce}" &>/dev/null & # Otherwise reprovider will continue announcing stale nonce. Pin still necessary to save from auto-GC
-    con_cull & # Need for DHT is over for now. So, let's cull unnecessary connections to reduce bandwidth usage.
-    safe_gc "${dl_lock}" & # Remove irrelevant blocks in bg
-    # Lockfile makes sure this is not run during file download, as otherwise downloaded but yet unpinned blocks might be GCd
-    sleep "$((ICPDI-EPOCHSECONDS+timestamp))" 2>/dev/null # Redirection for when the sleep time is negative
+    flock -n "${tmpdir}" ipfs pubsub pub "${broadcast}" "$(ipfs id "${selfID}" -f="<addrs>\n")" & # Announce own multiaddresses
+    if ((EPOCHSECONDS-start_peer_discov > 30)); then
+      flock "${peers_buffer}" sort -uo "${peers_buffer}" "${peers_buffer}" && mv "${peers_buffer}" "${peers}" # In-place sort followed by atomic move. -u defends against peers_buffer containing repetitions
+      con_cull & # Need for DHT is over for now. So, let's cull unnecessary connections to reduce bandwidth usage.
+      safe_gc "${dl_lock}" & # Remove irrelevant blocks in bg
+      # Lockfile makes sure this is not run during file download, as otherwise downloaded but yet unpinned blocks might be GCd
+      sleep "$((ICPDI-EPOCHSECONDS+timestamp))" 2>/dev/null # Redirection for when the sleep time is negative
+    else
+      sleep 1 # For the initial 30s after launch be relentless in peer discovery. No culling, no GC.
+    fi
   done  
 } &>"${tmpdir}/peering_daemon.log"; export -f peering_daemon
 
