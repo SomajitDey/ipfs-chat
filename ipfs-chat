@@ -307,7 +307,8 @@ config(){
 
   export chat="${chat:-"${tmpdir}/chat"}"; :>"${chat}" # Redirected no-op to clear file
   export peers="${tmpdir}/peers"; :>"${peers}" # File must exist for `dialog` to show through its tailbox
-  export peers_buffer="${tmpdir}/peers.buffer" input="${tmpdir}/input" dl_lock="${tmpdir}/dl.lock"
+  export peers_buffer="${tmpdir}/peers.buffer" peers_ready="${tmpdir}/peers.ready"
+  export input="${tmpdir}/input" dl_lock="${tmpdir}/dl.lock"
 
   export code="${tmpdir}/latest_version"
   [[ "${connect_mode}" != LAN ]] && update -d "${code}" &>/dev/null &
@@ -376,6 +377,7 @@ connect_peer(){
     done
   else
     cache_peer "${multiaddress}"
+    return 1
   fi
 } &>/dev/null; export -f connect_peer
 
@@ -399,8 +401,8 @@ peer_pubkey_nick(){
   fi &>/dev/null
   if peer_nick="$(tail -n1 "${peer_pubkey}")"; then
     local peer_buff="${peer_nick} @${peerID:${#peerID}-6:6}"
-    grep -q -m1 "${peer_buff}" "${peers}" || flock "${peers}" echo "${peer_buff}" >> "${peers}"
-    grep -q -m1 "${peer_buff}" "${peers_buffer}" || flock "${peers_buffer}" echo "${peer_buff}" >> "${peers_buffer}"
+    grep -q -m1 "${peer_buff}" "${peers}" || flock "${peers}" echo "${peer_buff}" >> "${peers}" # Live update of online-peers window
+    flock "${peers_buffer}" echo "${peer_buff}" >> "${peers_buffer}"
     echo "${peer_buff}"
   else
     return 1
@@ -478,6 +480,7 @@ subscriber_daemon &
 
 pubsub_conn(){
   # Brief: Connect to multiaddresses that are broadcast over pubsub
+  # TODO: Economize same peerID multiple multiaddress
   local multiaddress peerID
   while read -r multiaddress;do
     peerID="${multiaddress##*/}"
@@ -512,20 +515,20 @@ peering_daemon(){
     dht_ops_pid=() # Stores pid's of background DHT operations executing in the current pass
     local timestamp="${EPOCHSECONDS}" # Current Unix time
     local nonce="$(hmac "${broadcast}" "$((timestamp/120))" | ipfs add -Q --stdin-name='Rendezvous')" # Announce time based nonce
-    ipfs dht provide "${nonce}" & dht_ops_pid+=($!)
+    #ipfs dht provide "${nonce}" & dht_ops_pid+=($!) # TODO: TBD: Isnt `ipfs add` enough? `ipfs dht provide` takes loooong time
 
     peerID_list=() # Would store peerIDs seen in this pass
-    while read peerID; do # Connecting to peers and importing their latest pubkeys
+    while read -r -t 5 peerID; do # Connecting to peers and importing their latest pubkeys
       ((peerID_list["${peerID}"] != 1)) || continue # peerID handled already, so move on
       peerID_list["${peerID}"]=1 # Add to list so that other iterations won't handle this peerID again
       peer_pubkey_nick -n "${peerID}" &>/dev/null & dht_ops_pid+=($!) # Notice the nocache flag -n forcing IPNS update      
-    done < <(cat <(ipfs pubsub peers "${topic}") <(timeout 5 ipfs dht findprovs "${nonce}")) # Makes things concurrent
+    done < <(cat <(ipfs pubsub peers "${topic}") <(ipfs pubsub peers "${broadcast}") <(ipfs dht findprovs "${nonce}")) # Makes things concurrent
 
     wait "${dht_ops_pid[@]}" # Wait till all DHT operations are complete
+    ipfs id "${selfID}" -f="<addrs>\n" | xargs -n1 -0 ipfs pubsub pub "${broadcast}" # Announce own multiaddresses
     ipfs pin rm "${nonce}" &>/dev/null & # Otherwise reprovider will continue announcing stale nonce. Pin still necessary to save from auto-GC
-    ipfs pubsub pub "${broadcast}" "$(ipfs id "${selfID}" -f="<addrs>\n")" # Announce own multiaddresses
+    flock "${peers_buffer}" sort -uo "${peers_buffer}" "${peers_buffer}" && mv "${peers_buffer}" "${peers_ready}" # In-place sort followed by atomic move. -u defends against peers_buffer containing repetitions
     if ((EPOCHSECONDS-start_peer_discov > 30)); then
-      flock "${peers_buffer}" sort -uo "${peers_buffer}" "${peers_buffer}" && mv "${peers_buffer}" "${peers}" # In-place sort followed by atomic move. -u defends against peers_buffer containing repetitions
       con_cull & # Need for DHT is over for now. So, let's cull unnecessary connections to reduce bandwidth usage.
       safe_gc "${dl_lock}" & # Remove irrelevant blocks in bg
       # Lockfile makes sure this is not run during file download, as otherwise downloaded but yet unpinned blocks might be GCd
@@ -623,6 +626,7 @@ ui(){
       --inputbox "${input_help}" "${win3_height}" "${win3_width}" \
       2> "${input}"
       local exit_code=$?
+      mv -f "${peers_ready}" "${peers}" &>/dev/null # Refresh online-peers
       case "${exit_code}" in
         0) send ;; # Button: Send
         1) # Button: Clear
