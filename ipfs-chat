@@ -512,18 +512,18 @@ peering_daemon(){
     dht_ops_pid=() # Stores pid's of background DHT operations executing in the current pass
     local timestamp="${EPOCHSECONDS}" # Current Unix time
     local nonce="$(hmac "${broadcast}" "$((timestamp/120))" | ipfs add -Q --stdin-name='Rendezvous')" # Announce time based nonce
+    ipfs dht provide "${nonce}" & dht_ops_pid+=($!)
 
     peerID_list=() # Would store peerIDs seen in this pass
     while read peerID; do # Connecting to peers and importing their latest pubkeys
       ((peerID_list["${peerID}"] != 1)) || continue # peerID handled already, so move on
       peerID_list["${peerID}"]=1 # Add to list so that other iterations won't handle this peerID again
-      peer_pubkey_nick -n "${peerID}" &>/dev/null & # Non-blocking. Notice the nocache flag -n forcing IPNS update
-      local dht_ops_pid+=($!)
+      peer_pubkey_nick -n "${peerID}" &>/dev/null & dht_ops_pid+=($!) # Notice the nocache flag -n forcing IPNS update      
     done < <(cat <(ipfs pubsub peers "${topic}") <(timeout 5 ipfs dht findprovs "${nonce}")) # Makes things concurrent
 
     wait "${dht_ops_pid[@]}" # Wait till all DHT operations are complete
     ipfs pin rm "${nonce}" &>/dev/null & # Otherwise reprovider will continue announcing stale nonce. Pin still necessary to save from auto-GC
-    flock -n "${tmpdir}" ipfs pubsub pub "${broadcast}" "$(ipfs id "${selfID}" -f="<addrs>\n")" & # Announce own multiaddresses
+    ipfs pubsub pub "${broadcast}" "$(ipfs id "${selfID}" -f="<addrs>\n")" # Announce own multiaddresses
     if ((EPOCHSECONDS-start_peer_discov > 30)); then
       flock "${peers_buffer}" sort -uo "${peers_buffer}" "${peers_buffer}" && mv "${peers_buffer}" "${peers}" # In-place sort followed by atomic move. -u defends against peers_buffer containing repetitions
       con_cull & # Need for DHT is over for now. So, let's cull unnecessary connections to reduce bandwidth usage.
@@ -531,7 +531,7 @@ peering_daemon(){
       # Lockfile makes sure this is not run during file download, as otherwise downloaded but yet unpinned blocks might be GCd
       sleep "$((ICPDI-EPOCHSECONDS+timestamp))" 2>/dev/null # Redirection for when the sleep time is negative
     else
-      sleep 1 # For the initial 30s after launch be relentless in peer discovery. No culling, no GC.
+      continue # For the initial 30s after launch be relentless in peer discovery. No culling, no GC.
     fi
   done  
 } &>"${tmpdir}/peering_daemon.log"; export -f peering_daemon
