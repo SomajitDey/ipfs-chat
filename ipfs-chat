@@ -26,6 +26,15 @@ usage(){
   echo ; exit 1
 } >&2; export -f usage
 
+kill_proc_tree(){
+  # Brief: Kill (with SIGKILL) all descendants of the process id given
+  local pid
+  for pid in $(pgrep -P "${1}"); do
+    kill_proc_tree "${pid}" &
+  done
+  kill -KILL "${1}" 
+} &>/dev/null; export -f kill_proc_tree
+
 sha1(){
   # Usage: sha1 <string> ##or## sha1 < path_to_data_file
   local string="${@}"
@@ -34,7 +43,7 @@ sha1(){
   else
     sha1sum 
   fi | cut -d ' ' -f 1
-}; export -f sha1
+} 2>/dev/null; export -f sha1
 
 b64(){
   # Brief: Inline base64 encode with / replaced by _, and the trailing = dropped
@@ -42,14 +51,14 @@ b64(){
   # Substituting / with _ because / messes up using kdf/hmac outputs as directory or filenames
   # Usage: b64 <hexdump>
   xxd -r -p | base64 -w0 | tr -d '=' | tr '/' '_'
-}; export -f b64
+} 2>/dev/null; export -f b64
 
 hmac(){
   # Usage: hmac <salt> <string>
   # Output: base64, with / replaced by _, and trailing = dropped
   local key="$(sha1 "${1}")" data="$(sha1 "${2}")"
   echo -n "${data}" | xxd -r -p | openssl dgst -sha1 -mac hmac -macopt hexkey:"${key}" | cut -d ' ' -f 2 | b64
-}; export -f hmac
+} 2>/dev/null; export -f hmac
 
 kdf(){
   # Usage: kdf <salt> <string>
@@ -57,7 +66,7 @@ kdf(){
   local key="$(sha1 "${1}")" data="${2}"
   # No-need to lose `data` bits by prehashing. Hashing `key` ensures argon2 salt is atleast 8 characters long.
   echo -n "${data}" | argon2 "${key}" -t 3 -m 12 -p 1 -l 20 -r | b64
-}; export -f kdf
+} 2>/dev/null; export -f kdf
 
 dep_check(){
   # Brief: Check major dependencies
@@ -114,10 +123,10 @@ win2lin_path(){
   local input="${@}"; [[ -n "${input}" ]] || read -r input # Backslash not special due to -r
   if ! [[ "${input}" == ~* ]]; then
     local quote_less="$(echo "${input//\\/\\\\}" | xargs)" # xargs does quote removal. To save backslash, escaped 'em
-    wslpath "${quote_less}" 2>/dev/null && return
+    wslpath "${quote_less}" && return
   fi
   eval echo "${input}" # eval does tilde-expansion
-}; export -f win2lin_path
+} 2>/dev/null; export -f win2lin_path
 
 update(){
   # Usage: update [-s <update-from-file-path>] [-d <download-to-file-path>] [git-branch]
@@ -211,6 +220,7 @@ ipfs_config(){
 
   # Repo cleanup when no other instance is running; i.e. node is offline
   if ! ipfs swarm peers; then
+    rm -rf "${IPFS_PATH}/room#"*
     rm -f "${sess_peers}" "${sess_uplds}"
     ipfs pin ls --type=recursive --quiet | xargs -n1 ipfs pin rm # Remove stale pins to destress reprovider
   fi &>/dev/null # Can't be non-blocking. Otherwise launching IPFS daemon shows, "ERROR: lock ... :someone else has lock"
@@ -309,6 +319,7 @@ config(){
   export peers="${tmpdir}/peers"; :>"${peers}" # File must exist for `dialog` to show through its tailbox
   export peers_buffer="${tmpdir}/peers.buffer" peers_ready="${tmpdir}/peers.ready"
   export input="${tmpdir}/input" dl_lock="${tmpdir}/dl.lock"
+  export bg_pids="${tmpdir}/background.proc.id.list"
 
   export code="${tmpdir}/latest_version"
   [[ "${connect_mode}" != LAN ]] && update -d "${code}" &>/dev/null &
@@ -327,8 +338,6 @@ config(){
     fi
   }; export -f lwrap
   
-  trap "trap '' TERM; pkill -s 0; rm -rf ${tmpdir}; ls -d ${IPFS_PATH}/room#* &>/dev/null || (ipfs shutdown; gpgconf --kill gpg-agent)" exit
-  # TODO: Replace pkill -s 0 with smthing better. If `kill -9 -1`, room# is not removed & new instance can't run. Fix ASAP.
 } >&2; export -f config
 
 config
@@ -355,6 +364,21 @@ EOF
 } &>/dev/null; export -f identity
 
 identity || { echo "Error: Failed to generate key-pair" >&2; exit 1;}
+
+on_exit(){
+  # Brief: Perform these tasks on exit; called by trap
+  local pid
+  for pid in $(cat ${bg_pids}); do
+    kill_proc_tree "${pid}" &
+  done
+  rm -rf "${tmpdir}"
+  if ! ls -d ${IPFS_PATH}/room#*; then 
+    gpgconf --kill gpg-agent
+    ipfs shutdown
+  fi
+} &>/dev/null; export -f on_exit
+  
+trap "on_exit" exit
 
 cache_peer(){
   # Brief: Cache peerID or multiaddress given as argument. The cache will be used by con_cull
@@ -476,7 +500,7 @@ subscriber_daemon(){
   done < <(ipfs pubsub sub "${topic}" | grep --line-buffered -x '[[:alnum:]]*[[:blank:]][[:alnum:]+/=]*[[:blank:]][[:alnum:]]*')
 } &>"${tmpdir}/subscriber_daemon.log"; export -f subscriber_daemon
 
-subscriber_daemon &
+subscriber_daemon & echo "${!}" >> "${bg_pids}"
 
 pubsub_conn(){
   # Brief: Connect to multiaddresses that are broadcast over pubsub
@@ -488,7 +512,7 @@ pubsub_conn(){
   done < <(ipfs pubsub sub "${broadcast}" | grep --line-buffered -x '[[:alnum:]/.:-]*')
 } &>"${tmpdir}/pubsub_conn.log"; export -f pubsub_conn
 
-echo "Status: Launching peer-discovery over pubsub..." >&2; pubsub_conn &
+echo "Status: Launching peer-discovery over pubsub..." >&2; pubsub_conn & echo "${!}" >> "${bg_pids}"
 
 con_cull(){
   # Brief: Cull all connections except those in the cache, and the connection to relay (if any)
@@ -539,7 +563,7 @@ peering_daemon(){
   done  
 } &>"${tmpdir}/peering_daemon.log"; export -f peering_daemon
 
-echo "Status: Launching peer-discovery over DHT..." >&2; peering_daemon &
+echo "Status: Launching peer-discovery over DHT..." >&2; peering_daemon & echo "${!}" >> "${bg_pids}"
 
 file_pack(){
   # Brief: Encrypt file with its salted hash, add to IPFS & output CID and encrypt key
@@ -598,7 +622,7 @@ send(){
 
 ui(){
   # Brief: UI event-loop. Window numbering: 1(Top Left) 2(Top Right) 3(Spanning Bottom)
-  while :;do
+  while ipfs swarm peers &>/dev/null;do
     # Dimensions are computed just before calling `dialog` to accomodate for the latest terminal window size changes
     local tty_height="$(tput lines)" tty_width="$(tput cols)"
     local win3_height=10 win3_width="${tty_width}"

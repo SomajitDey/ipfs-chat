@@ -131,7 +131,7 @@ Local (LAN based) discovery is also enabled ([Discovery.MDNS.Enabled=true](https
 
 Also, if a peer sees a message (over pubsub) from a peer that it is not directly connected to, it tries to connect to it immediately.
 
-**Note**: The rendezvous nonce changes every 2 mins. Due to this, a peer is shown to be online upto 2 mins after it goes offline.
+**Note**: The rendezvous nonce changes every 2 mins. Due to this, a peer might be shown to be online upto 2 mins after it goes offline.
 
 ## Security
 
@@ -199,17 +199,12 @@ For efficiency regarding file-sharing, see [File or directory sharing](#file-or-
 
 **Tip**: To show bandwidth usage by the node at the end of a session, launch `ipfs-chat` with the `-b` flag. Note that this shows the cumulative bandwidth consumption by all `ipfs-chat` instances using the same node at the same time.
 
-## Warning
-
-`ipfs-chat` does a `pkill -s0` while exiting which closes all processes in the current terminal session. Fixing this limitation is in the TODO list. For the time being, however, it is advised that `ipfs-chat` be opened in a new terminal whenever possible.
-
 ## Fully decentralized vs (Semi-)centralized
 
 Apart from its dependence on an array of bootstrap and relay-hop nodes, `ipfs-chat` is fully server/broker-less. As long as these bootstrap and relay-hop nodes are public, there is much redundancy and hence resilience. Also, many bootstrap and relay-hop nodes are addressed using IP rather than DNS names. This should make the default `ipfs-chat` censor-resistant. However, should you so need, you can always replace the public bootstrap and relay-hop nodes with your own one(s).
 
 ## Future directions
 
-2. Refactor codebase.
 3. Detect and block malicious peers. All direct connections to blocked peers are culled. Users can also block (and unblock later) specific nicks (regex pattern), peer IDs. While blocking, users can opt for - 1. Block permanently; 2. For present session only. **TBD**: News of this blocking (who blocked whom and when) may or may not be published over pubsub for other peers to see and decide for themselves.
 4. Offline mode such that even if a peer goes offline, it can obtain the missed messages when it comes back online [This may well be beyond my capabilities]. Once [`orbit-db-cli`](https://github.com/orbitdb/orbit-db-cli) matures, it might help achieve this. Random idea: Online peers publish CIDs of time-based logs at regular intervals over pubsub. Logs are directories containing chats - one message in one file. Even if logs of two peers don't match exactly, they will have many files in common, thus achieving major deduplication and also helping availability across the ipfs-chat network.
 
