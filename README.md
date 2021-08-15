@@ -3,7 +3,7 @@
 1. Real-time, secure, peer-to-peer messaging using [IPFS pubsub](https://github.com/ipfs/go-ipfs/blob/master/docs/experimental-features.md#ipfs-pubsub). Allows in-chat file/directory sharing and private messaging. Works over both internet and LAN. Built-in NAT-traversal using [IPFS autorelay](https://github.com/ipfs/go-ipfs/blob/master/docs/experimental-features.md#autorelay).
 2. Very basic terminal-based UI without any eye candy.
 3. The usual *Create Alias/Nick* + *Create/Join room* workflow (akin to [IRC](https://en.wikipedia.org/wiki/Internet_Relay_Chat)).
-4. Fully distributed - serverless/brokerless. Peers are discovered using [DHT](https://docs.ipfs.io/concepts/dht/), [pubsub](https://docs.libp2p.io/concepts/publish-subscribe/) and [mDNS](https://en.wikipedia.org/wiki/Multicast_DNS) (See [Peer discovery](#peer-discovery)). No need for any rendezvous server. Without any central server(s), `ipfs-chat` cannot be censored/blocked.
+4. Fully distributed - serverless/brokerless. Peers are discovered using [DHT](https://docs.ipfs.io/concepts/dht/), [pubsub](https://docs.libp2p.io/concepts/publish-subscribe/) and [mDNS](https://en.wikipedia.org/wiki/Multicast_DNS) (See [Peer discovery](#peer-discovery)). No need for any rendezvous server. Without any central server(s), `ipfs-chat` cannot be censored/blocked easily.
 5. Chat-messages are authenticated and end-to-end encrypted (See [Security](#security)). Shared files/directories are encrypted too.
 6. Developed with bandwidth, CPU and disk usage efficiency in mind. Option to control shared file size (See [Usage](#usage)).
 7. Written entirely in [Bash](https://www.gnu.org/software/bash/manual/bash.html); just a single shell-script. Apart from [go-ipfs](https://docs.ipfs.io/install/command-line/#official-distributions) and possibly `argon2`, depends only on standard GNU/Linux tools and tools that can be easily downloaded from the native package repository.
@@ -15,22 +15,26 @@
 
 ## Installation
 
-Download:
+#### Download:
 
 ```shell
 git clone --depth 1 --no-tags https://github.com/SomajitDey/ipfs-chat; cd ipfs-chat
-# Or
+
+# Or,
+
 wget https://raw.githubusercontent.com/SomajitDey/ipfs-chat/main/ipfs-chat \
 && chmod +x ./ipfs-chat
 ```
 
-Install:
+#### Install:
 
 ```bash
 sudo mv ./ipfs-chat /usr/local/bin
-# Or if you don't have sudo priviledge:
+
+# Or, if you don't have sudo priviledge:
+
 mkdir -p ~/.bin; mv ./ipfs-chat ~/.bin; export PATH="${PATH}:${HOME}/.bin"
-# Also put the export command inside ${HOME}/.bashrc
+# Also put the last export command inside ${HOME}/.bashrc
 ```
 
 Do you want an auto-install feature, such as `./ipfs-chat -i`? If so, please [post](#bug-reports-and-feedbacks) a feature-request.
@@ -161,7 +165,7 @@ Other peers receive this over pubsub, decrypt the message and verify the signatu
 
 ## File or directory sharing
 
-Directories, when shared, are first archived through `tar` and those archives then shared like regular files.
+Directories, when shared, are first archived through `tar` and then those archives are shared like regular files.
 
 Shared files are encrypted using their SHA1 hash and then added to IPFS. The CID of the added file and the aforementioned encrypting hash are then sent to the chatroom peer(s) in a general or private message.
 
@@ -177,7 +181,7 @@ Encrypting large files is time-consuming. Files once encrypted are therefore cac
 
 ## Efficiency
 
-[IPFS usually consumes a lot of bandwidth](https://github.com/ipfs/go-ipfs/issues/3429). To make it more efficient, all unnecessary connections are closed at regular intervals: The node maintains a list of all chatroom peers seen or discovered in a session. All other connections, except connections to the relays the node itself or its chatroom peers are connected to, are culled on a frequent basis.
+[IPFS usually consumes a lot of bandwidth](https://github.com/ipfs/go-ipfs/issues/3429). To make it more efficient, all unnecessary connections are closed at regular intervals: The node maintains a list of all chatroom peers seen or discovered in a session. All other connections, except connections to the relays that the node itself or its chatroom peers are connected to, are culled on a frequent basis.
 
 New connections are always being formed to nodes within the general IPFS network. The interval between consecutive cullings is large enough to gather sufficient number of nodes for performing DHT operations such as providing the rendezvous file, finding other providers and finding the multiaddresses of those providers. Once these operations are finished, the culling is performed.
 
@@ -201,7 +205,7 @@ For efficiency regarding file-sharing, see [File or directory sharing](#file-or-
 
 ## Fully decentralized vs (Semi-)centralized
 
-Apart from its dependence on an array of bootstrap and relay-hop nodes, `ipfs-chat` is fully server/broker-less. As long as these bootstrap and relay-hop nodes are public, there is much redundancy and hence resilience. Also, many bootstrap and relay-hop nodes are addressed using IP rather than DNS names. This should make the default `ipfs-chat` censor-resistant. However, should you so need, you can always replace the public bootstrap and relay-hop nodes with your own one(s).
+Apart from its dependence on a set of of bootstrap and relay nodes, `ipfs-chat` is fully server/broker-less. As long as these bootstrap and relay nodes are public, there can be much redundancy and resilience. However, should you so need, you can always replace the public bootstrap and relay nodes with your own one(s).
 
 ## Future directions
 
