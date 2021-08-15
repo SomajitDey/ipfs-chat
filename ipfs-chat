@@ -576,7 +576,7 @@ file_pack(){
   elif [[ -d "${path}" ]]; then
     local dir="${path}"; path="$(tmpgen)"
     local dirname="${dir##*/}"
-    (cd "${dir}"/.. ; tar -czf "${path}" "${dirname}")
+    (cd "${dir}"/.. ; tar -czf "${path}" "${dirname}") # This trick makes sure tar -xzf gives only the desired directory, not its parents
     filename="${dirname}.tar.gz"
   else
     return 0    
