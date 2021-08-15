@@ -574,8 +574,10 @@ file_pack(){
   if [[ -f "${path}" ]]; then
     filename="${path##*/}"
   elif [[ -d "${path}" ]]; then
-    local dir="${path}"; path="$(tmpgen)"; tar -czf "${path}" "${dir}"
-    filename="${dir##*/}.tar.gz"
+    local dir="${path}"; path="$(tmpgen)"
+    local dirname="${dir##*/}"
+    (cd "${dir}"/.. ; tar -czf "${path}" "${dirname}")
+    filename="${dirname}.tar.gz"
   else
     return 0    
   fi
