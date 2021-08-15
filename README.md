@@ -65,7 +65,7 @@ All command-line options/flags are optional. Unobvious options are explained bel
 
 **Defaults**:
 
-room: `Salon`
+room: `Lobby`
 
 nick: `${USER}`
 
