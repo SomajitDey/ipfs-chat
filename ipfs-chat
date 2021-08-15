@@ -491,13 +491,13 @@ pubsub_conn(){
 echo "Status: Launching peer-discovery over pubsub..." >&2; pubsub_conn &
 
 con_cull(){
-  # Brief: Cull all connections except those in the file provided as argument or cache, & the connection to relay (if any)
+  # Brief: Cull all connections except those in the cache, and the connection to relay (if any)
   # Purpose: Reducing bandwidth usage by killing all irrelevant connections
-  local curr_self_address="$(ipfs id "${selfID}" -f="<addrs>\n")" peerID_list="${1:-"${sess_peers}"}"
+  local curr_self_address="$(ipfs id "${selfID}" -f="<addrs>\n")"
   local multiaddress peerID
   for multiaddress in $(ipfs swarm peers); do
     peerID="${multiaddress##*/}"
-    grep -q "${peerID}" "${peerID_list}" || (echo "${curr_self_address}" | grep -q "${peerID}") || \
+    grep -q -m1 "${peerID}" "${sess_peers}" || (echo "${curr_self_address}" | grep -q -m1 "${peerID}") || \
       ipfs swarm disconnect "/p2p/${peerID}"
   done
 } &>/dev/null; export -f con_cull
@@ -506,7 +506,7 @@ declare -irx ICPDI="${ICPDI:=30}" # IPFS_CHAT_PEER_DISCOVERY_INTERVAL in seconds
 
 peering_daemon(){
   # Brief: Discover & connect to chat-peers & announce self for others to discover - at regular intervals
-  local peerID peer_nick
+  local peerID
   local -a dht_ops_pid
   local -A peerID_list # Associative array
 
