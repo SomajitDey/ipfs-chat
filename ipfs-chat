@@ -196,6 +196,12 @@ parse_cmdline "$@"
 
 info
 
+cache_peer(){
+  # Brief: Cache peerID or multiaddress given as argument. The cache will be used by con_cull
+  local peerID="${1}"
+  grep -q -m1 "${peerID}" "${sess_peers}" || flock "${sess_peers}" echo "${peerID}" >> "${sess_peers}"
+} &>/dev/null; export -f cache_peer
+
 ipfs_config(){
   # Brief: Configure IPFS node
   # Note: Use random ports for everything so that multiple IPFS nodes can coexist on the same machine
@@ -282,7 +288,7 @@ ipfs_config(){
   echo "$(tput ed)Status: IPFS node is configured"
   declare -rigx daemon_launch_time="${EPOCHSECONDS}"
   
-  export selfID="$(ipfs config Identity.PeerID)"
+  export selfID="$(ipfs config Identity.PeerID)"; cache_peer "${selfID}"
   export topic="$(kdf "ipfs-chat" "${room}")" broadcast="$(kdf "peer-addresses" "${room}")"
 } >&2; export -f ipfs_config
 
@@ -380,12 +386,6 @@ on_exit(){
   
 trap "on_exit" exit
 
-cache_peer(){
-  # Brief: Cache peerID or multiaddress given as argument. The cache will be used by con_cull
-  local peerID="${1}"
-  grep -q -m1 "${peerID}" "${sess_peers}" || flock "${sess_peers}" echo "${peerID}" >> "${sess_peers}"
-} &>/dev/null; export -f cache_peer
-
 connect_peer(){
   # Brief: Connect to peer ID or multiaddress provided as argument
   # TODO: Simplify and economize
@@ -412,7 +412,7 @@ peer_pubkey_nick(){
   getopts n opt; [[ "${opt}" == "n" ]] && nocache="--nocache"
   local multiaddress="${!OPTIND}"
   local peerID="${multiaddress##*/}" peer_nick
-  connect_peer "${multiaddress}"
+  connect_peer "${multiaddress}" &
   local ipfs_path="$(i=0; until ipfs name resolve ${nocache} "/ipns/${peerID}" || ((i>5));do ((i++)); done)"
   [[ -n "${ipfs_path}" ]] || return 1
   local peer_pubkey="${tmpdir}/${ipfs_path##*/}"
@@ -601,7 +601,7 @@ send(){
     recipID="$(grep -Eom1 "[[:alnum:]]*${first_word//@/}$" "${sess_peers}")"
     cut -z -d ' ' -f 2- "${input}" > "${msg}"
     grep -xq "${first_word}" "${msg}" && return # Skip empty input
-    local prefix="PM to $(grep "${first_word}" "${peers}") $(date +"%a %H:%M:%S") -- "
+    local prefix="PM to $(grep -m1 "${first_word}" "${peers}") $(date +"%a %H:%M:%S") -- "
   else  
     mv "${input}" "${msg}"
   fi
@@ -622,7 +622,11 @@ send(){
 
 ui(){
   # Brief: UI event-loop. Window numbering: 1(Top Left) 2(Top Right) 3(Spanning Bottom)
-  while ipfs swarm peers &>/dev/null;do
+    local input_help="\Zb\Z4Nick: \Zu\Z0${nick}\Zn \Zb\Z4peerID: \Zu\Z0@${selfID:${#selfID}-6:6}\Zn
+\Zb\Z4General-Message:\Z1 Simply type in your text & press Enter or Send\Zn
+\Zb\Z4Fle-sharing:\Z2 Drag-n-drop file or directory, or use the File explorer button, or type in path\Zn
+\Zb\Z4Private-Message:\Z5 Put recipient's @peerID followed by a space before your text or file-path\Zn"
+  while :;do
     # Dimensions are computed just before calling `dialog` to accomodate for the latest terminal window size changes
     local tty_height="$(tput lines)" tty_width="$(tput cols)"
     local win3_height=10 win3_width="${tty_width}"
@@ -634,10 +638,6 @@ ui(){
       lwrap "${chat}"
       local last_win1_width="${win1_width}"
     fi # Conditionality decreases lag between pressing Send and subsequent chatbox update
-    local input_help="\Zb\Z4Nick: \Zu\Z0${nick}\Zn \Zb\Z4peerID: \Zu\Z0@${selfID:${#selfID}-6:6}\Zn
-\Zb\Z4General-Message:\Z1 Simply type in your text & press Enter or Send\Zn
-\Zb\Z4Fle-sharing:\Z2 Drag-n-drop file or directory, or use the File explorer button, or type in path\Zn
-\Zb\Z4Private-Message:\Z5 Put recipient's @peerID followed by a space before your text or file-path\Zn"
     dialog --keep-tite \
       --title "ipfs-chat-room: ${room}" --begin 0 0 --tailboxbg "${chat}" "${win12_height}" "${win1_width}" \
       --and-widget \
