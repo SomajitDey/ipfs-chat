@@ -2,7 +2,7 @@
 # Details: See info and usage functions below
 # Warning: This code closes all background processes in the current terminal session on exit # TODO:
 
-export version="0.2.2 (alpha)"
+export version="0.2.3 (alpha)"
 
 info(){
   # Brief: Info about ipfs-chat
@@ -82,11 +82,6 @@ dep_check(){
   if ! command -v dialog &>/dev/null; then
     echo -e "Required: dialog\nSource: Native package repository"
     echo -e "Ref: https://command-not-found.com/dialog\n"
-    quit="yes"
-  fi
-  if ! command -v setsid &>/dev/null; then
-    echo -e "Required: setsid\nSource: Native package repository"
-    echo -e "Ref: https://command-not-found.com/setsid\n"
     quit="yes"
   fi
   if ! command -v curl &>/dev/null; then
@@ -244,7 +239,8 @@ ipfs_config(){
 
   case "${connect_mode}" in
     LAN)
-      ipfs config --bool Discovery.MDNS.Enabled true
+      ipfs config profile apply local-discovery &>/dev/null # Revert changes done by Server profile
+      #ipfs config --bool Discovery.MDNS.Enabled true
       ipfs bootstrap rm all &>/dev/null # For faster startup
       # Disable NAT traversal
       ipfs config --bool Swarm.DisableNatPortMap true
@@ -254,9 +250,12 @@ ipfs_config(){
       ;;
     WAN | *)
       if [[ "${connect_mode}" == WAN ]]; then
-        ipfs config --bool Discovery.MDNS.Enabled false
+        ipfs config profile apply server &>/dev/null
+        # Server profile disables swarm connecting to private IPs. Doesn't announce own private IPs. Disables MDNS discovery
+        #ipfs config --bool Discovery.MDNS.Enabled false
       else
-        ipfs config --bool Discovery.MDNS.Enabled true
+        ipfs config profile apply local-discovery &>/dev/null # Revert changes done by Server profile
+        #ipfs config --bool Discovery.MDNS.Enabled true
       fi
       ipfs bootstrap add default &>/dev/null # For WAN-DHT
       # For NAT traversal
@@ -280,11 +279,11 @@ ipfs_config(){
   local gateway_port="$(pscan "${API_port}")"; ipfs config Addresses.Gateway "/ip4/127.0.0.1/tcp/${gateway_port:=8080}"
 
   until ipfs swarm peers;do
-    setsid --fork flock -sF "${global_fs}" ipfs daemon --enable-pubsub-experiment --enable-namesys-pubsub # Non-blocking due to --fork
-    # setsid makes sure daemon runs in a separate session, such that `pkill -s 0` does not kill it.
+    flock -sF "${global_fs}" ipfs daemon --enable-pubsub-experiment --enable-namesys-pubsub &   
     # TODO: Once main exit trap is refactored, perhaps we can do away with setsid.
     sleep 0.1
   done &>/dev/null
+  rm -f "${IPFS_PATH}/config-pre-"* # Remove config backup files generated with `ipfs config profile apply`
   echo "$(tput ed)Status: IPFS node is configured"
   declare -rigx daemon_launch_time="${EPOCHSECONDS}"
   
@@ -293,22 +292,6 @@ ipfs_config(){
 } >&2; export -f ipfs_config
 
 ipfs_config
-
-safe_gc(){
-  # Brief: Remove blocks that are not pinned. Difference with `ipfs repo gc` is that this removes only those blocks
-  # that are there when function is called, even if the actual cleanup takes time. Also, can check lock for added safety.
-  # Usage: safe_gc [<lock-file>]
-  # Note: Requires IPFS to be online otherwise exit with error
-  ipfs swarm peers && flock -n 3 || return 1
-  local lock="${1}"
-  if [[ -n "${lock}" ]]; then
-    flock -n "${lock}" ipfs refs local # This doesn't take much time
-  else
-    ipfs refs local
-  fi | xargs -n1 ipfs block rm # This is the time consuming part
-} &>/dev/null 3<"${IPFS_PATH}/config"; export -f safe_gc
-
-safe_gc &
 
 config(){
   # Brief: General config. Compute and export variables. Setup tmp dir and runtime filesystem.
@@ -347,6 +330,22 @@ config(){
 } >&2; export -f config
 
 config
+
+safe_gc(){
+  # Brief: Remove blocks that are not pinned. Difference with `ipfs repo gc` is that this removes only those blocks
+  # that are there when function is called, even if the actual cleanup takes time. Also, can check lock for added safety.
+  # Usage: safe_gc [<lock-file>]
+  # Note: Requires IPFS to be online
+  flock -n 3 || return 1
+  local lock="${1}"
+  if [[ -n "${lock}" ]]; then
+    flock -n "${lock}" ipfs refs local # This doesn't take much time
+  else
+    ipfs refs local
+  fi | xargs -n1 ipfs block rm # This is the time consuming part
+} &>/dev/null 3<"${IPFS_PATH}/config"; export -f safe_gc
+
+safe_gc & echo "${!}" >> "${bg_pids}"
 
 identity(){
   # Brief: Generate key-pair. Claim nick & pubkey using IPNS.
@@ -390,17 +389,20 @@ connect_peer(){
   # Brief: Connect to peer ID or multiaddress provided as argument
   # TODO: Simplify and economize
   local input="${1}" peerID="${1##*/}" multiaddress
-  if [[ "${peerID}" != "${input}" ]]; then
+  if [[ "${peerID}" == "${selfID}" ]]; then
+    return 0
+  elif [[ "${peerID}" != "${input}" ]]; then
     multiaddress="${input}"
   else
     multiaddress="/p2p/${peerID}"
   fi
-  if [[ "${peerID}" == "${selfID}" ]] || (ipfs swarm peers | grep -q -m1 "${peerID}") || ipfs swarm connect "${multiaddress}"; then
+  if ipfs swarm connect "${multiaddress}"; then
+    # Swarm connect autochecks whether peerID is already connected. If not, only then tries multiaddress
     for multiaddress in $(ipfs swarm peers | grep "${peerID}"); do
       cache_peer "${multiaddress}" # Add multiaddress of both peer and any relay it is accessed through
     done
   else
-    cache_peer "${multiaddress}"
+    cache_peer "${peerID}"
     return 1
   fi
 } &>/dev/null; export -f connect_peer
@@ -408,6 +410,7 @@ connect_peer(){
 peer_pubkey_nick(){
   # Brief: Import pubkey of peer ID or multiaddress passed as argument and output its nick. Flag -n to force IPNS update (nocache).
   # TODO: TBD: peer_pubkey=CID_peerID
+  # TODO: Optimize performance / eliminate repetitions with lock. Solve sometimes peer_nick not showing
   local OPTIND=1 opt nocache
   getopts n opt; [[ "${opt}" == "n" ]] && nocache="--nocache"
   local multiaddress="${!OPTIND}"
@@ -424,6 +427,7 @@ peer_pubkey_nick(){
     gnupg --no-default-keyring --keyring "${peer_kbx}" --import "${peer_pubkey}" || rm -f "${peer_pubkey}"
   fi &>/dev/null
   if peer_nick="$(tail -n1 "${peer_pubkey}")"; then
+    [[ -n "${peer_nick}" ]] || return 1 # TODO: Understand how peer_nick can ever be empty
     local peer_buff="${peer_nick} @${peerID:${#peerID}-6:6}"
     grep -q -m1 "${peer_buff}" "${peers}" || flock "${peers}" echo "${peer_buff}" >> "${peers}" # Live update of online-peers window
     flock "${peers_buffer}" echo "${peer_buff}" >> "${peers_buffer}"
@@ -535,7 +539,7 @@ peering_daemon(){
   local -A peerID_list # Associative array
 
   local -r start_peer_discov="${EPOCHSECONDS}"
-  while ipfs swarm peers &>/dev/null;do # Do as long as IPFS daemon is alive
+  while :;do
     dht_ops_pid=() # Stores pid's of background DHT operations executing in the current pass
     local timestamp="${EPOCHSECONDS}" # Current Unix time
     local nonce="$(hmac "${broadcast}" "$((timestamp/120))" | ipfs add -Q --stdin-name='Rendezvous')" # Announce time based nonce
