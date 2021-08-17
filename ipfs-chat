@@ -644,7 +644,7 @@ ui(){
       lwrap "${chat}"
       local last_win1_width="${win1_width}"
     fi # Conditionality decreases lag between pressing Send and subsequent chatbox update
-    dialog --keep-tite \
+    DIALOG_CANCEL=4 dialog --keep-tite \
       --title "Room: ${room}" --begin 0 0 --tailboxbg "${chat}" "${win12_height}" "${win1_width}" \
       --and-widget \
       --title "Online-peers" --begin 0 "${win1_width}" --tailboxbg "${peers}" "${win12_height}" "${win2_width}" \
@@ -659,11 +659,6 @@ ui(){
       mv -f "${peers_ready}" "${peers}" &>/dev/null # Refresh online-peers
       case "${exit_code}" in
         0) send ;; # Button: Send
-        1) # Button: Clear
-           dialog --keep-tite --title "Press Spacebar to autocomplete or select/copy" --begin 0 0 \
-           --fselect "${PWD}" "${win12_height}" "${tty_width}" 2> "${input}" \
-           && send
-           ;;
         2) # Button: Inspect peers
            dialog --keep-tite --no-shadow --exit-label "Back"\
            --title "Online-peers" --begin 0 0 --textbox "${peers}" "${tty_height}" "${tty_width}"
@@ -672,7 +667,12 @@ ui(){
            dialog --keep-tite --no-shadow --exit-label "Back"\
            --title "Room: ${room}" --begin 0 0 --textbox "${chat}" "${tty_height}" "${tty_width}"
            ;;
-        *) # Esc
+        4) # Button: Clear
+           dialog --keep-tite --title "Press Spacebar to autocomplete or select/copy" --begin 0 0 \
+           --fselect "${PWD}" "${win12_height}" "${tty_width}" 2> "${input}" \
+           && send
+           ;;
+        1 | *) # Esc
            local confirm_quit="Shared file download is in progress. Still wanna quit?"
            if ! flock -n "${dl_lock}" -c : ; then
             # Check if dl_lock is held by file_unpack or safe_gc. In the latter case, return without prompt.
