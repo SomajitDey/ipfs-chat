@@ -67,7 +67,7 @@ All command-line options/flags are optional. Unobvious options are explained bel
 
 `-u` does a manual update of `ipfs-chat`. This option is not very necessary as `ipfs-chat` auto-updates whenever there is internet connection and it is not running in LAN-only mode.
 
-**Defaults**:
+#### Defaults:
 
 room: `Lobby`
 
@@ -83,7 +83,7 @@ chat log: N/A
 
 WAN + LAN
 
-**Multiple-instances**:
+#### Multiple-instances:
 
 Multiple instances of `ipfs-chat` may be run for accessing different chatrooms concurrently. This may be done in 2 ways:
 
@@ -107,15 +107,15 @@ Multiple instances of `ipfs-chat` may be run for accessing different chatrooms c
 
 ## Testing
 
-You can test `ipfs-chat` by running multiple instances on your computer, or running one instance on your machine and another instance on another computer or a free cloud shell such as [Google's](https://cloud.google.com/shell). Simply use different nicknames and join the same chatroom. Example: Connect to the internet and do the following.
+You can test `ipfs-chat` by running multiple instances on your computer. Simply use different nicknames and join the same chatroom. Example: Connect to the internet and do the following.
 
 ```shell
 ipfs-chat -b -c '/tmp/ipfs-chat' -n 'partner' # In one terminal
-ipfs-chat -b # In another terminal, computer or cloud shell
+ipfs-chat -b # In another terminal
 # -b above enables bandwidth stats. Drop it if you are not interested in those stats.
 ```
 
-Test further. Disconnect from the internet and run the above two instances on your local machine or two LAN-connected hosts with the `-l` or `-L` flag.
+Test further. Disconnect from the internet and run the above two instances on your local machine (or two LAN-connected hosts) with the `-l` or `-L` flag.
 
 ## Changing terminal window size
 
