@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Details: See info and usage functions below
-# Warning: This code closes all background processes in the current terminal session on exit # TODO:
 
-export version="0.2.3 (alpha)"
+export version="0.2.4 (alpha)"
 
 info(){
   # Brief: Info about ipfs-chat
@@ -191,6 +190,8 @@ parse_cmdline(){
 parse_cmdline "$@"
 
 info
+echo "DL dir: $(tput smso)${dldir}$(tput rmso)" >&2
+echo "Max filesize: $(tput setaf 1)$(((max_dl_MB>=0)) && echo "${max_dl_MB} MB" || echo 'N/A; Use -D flag')$(tput sgr0)" >&2
 
 cache_peer(){
   # Brief: Cache peerID or multiaddress given as argument. The cache will be used by con_cull
@@ -282,7 +283,6 @@ ipfs_config(){
   echo "$(tput cuu1; tput ed)Status: Getting node online (launching IPFS daemon)..."
   until ipfs swarm peers;do
     flock -sF "${global_fs}" ipfs daemon --enable-pubsub-experiment --enable-namesys-pubsub &   
-    # TODO: Once main exit trap is refactored, perhaps we can do away with setsid.
     sleep 0.1
   done &>/dev/null
   rm -f "${IPFS_PATH}/config-pre-"* # Remove config backup files generated with `ipfs config profile apply`
@@ -323,9 +323,9 @@ config(){
     local file="${1}" width="$(($(flock -s "${cb_wd}" cat "${cb_wd}")-5))" # Read lock; note option -s in flock
     if [[ -n "${file}" ]]; then
       local buff="$(tmpgen)"
-      fold -w "${width}" "${file}" > "${buff}" && flock "${file}" mv "${buff}" "${file}" # In-place, atomic edit
+      fold -s -w "${width}" "${file}" > "${buff}" && flock "${file}" mv "${buff}" "${file}" # In-place, atomic edit
     else
-      fold -w "${width}"
+      fold -s -w "${width}"
     fi
   }; export -f lwrap
   
@@ -457,7 +457,6 @@ check_mime_type(){
 file_unpack(){
   # Brief: Download and decrypt shared file
   # Usage: file_unpack <file-hash> <IPFS-CID> <filename>
-  # TODO: MIME-type checking of filename extension using a list of all common mime-types. Command `file -ib`, --mime-type doesn't work for RHEL
   # TODO: Ask user for permission to download instead of rejecting for size>max_dl_MB
   flock -s 3
   local dec_hash="${1}" cid="${2}" dlpath="${dldir}/${3}"
@@ -607,7 +606,7 @@ send(){
   local first_word="$(cut -z -d ' ' -f 1 "${input}")"
   if [[ "${first_word}" =~ ^@[[:alnum:]]{6}$ ]]; then
     recipID="$(grep -Eom1 "[[:alnum:]]*${first_word//@/}$" "${sess_peers}")"
-    cut -z -d ' ' -f 2- "${input}" > "${msg}"
+    cut -d ' ' -f 2- "${input}" | tr -d $'\n' > "${msg}"
     grep -xq "${first_word}" "${msg}" && return # Skip empty input
     local prefix="PM to $(grep -m1 "${first_word}" "${peers}") $(date +"%a %H:%M:%S") -- "
   else  
@@ -675,7 +674,7 @@ ui(){
            $(awk '{print $2,$1}' "${peers}") 2> "${PM_buffer}" &&  echo -n ' ' >> "${PM_buffer}"
            ;;
         3) # Button: Chat
-           dialog --keep-tite --no-shadow --exit-label "Back"\
+           dialog --keep-tite --no-shadow --scrollbar --exit-label "Back" \
            --title "Room: ${room}" --begin 0 0 --textbox "${chat}" "${tty_height}" "${tty_width}"
            : > "${PM_buffer}"; : > "${file_buffer}"
            ;;
