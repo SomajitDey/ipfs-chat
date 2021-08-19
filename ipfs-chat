@@ -547,11 +547,12 @@ peering_daemon(){
     #ipfs dht provide "${nonce}" & dht_ops_pid+=($!) # TODO: TBD: Isnt `ipfs add` enough? `ipfs dht provide` takes loooong time
 
     peerID_list=() # Would store peerIDs seen in this pass
-    while read -r -t 5 peerID; do # Connecting to peers and importing their latest pubkeys
+    while read -r -t 5 peerID; do # Connecting to peers and importing their latest pubkeys. Exp: No timeout messes things up
       ((peerID_list["${peerID}"] != 1)) || continue # peerID handled already, so move on
       peerID_list["${peerID}"]=1 # Add to list so that other iterations won't handle this peerID again
       peer_pubkey_nick -n "${peerID}" &>/dev/null & dht_ops_pid+=($!) # Notice the nocache flag -n forcing IPNS update      
-    done < <(cat <(ipfs pubsub peers "${topic}") <(ipfs pubsub peers "${broadcast}") <(ipfs dht findprovs "${nonce}")) # Makes things concurrent
+    done < <(cat <(ipfs pubsub peers "${topic}") <(ipfs pubsub peers "${broadcast}") <(timeout 5.5 ipfs dht findprovs "${nonce}"))
+    # Makes things concurrent. Note: Without the `ipfs dht` timeout, `ps` would be replete with older `cat` and `ipfs dht`
 
     [[ -n "${dht_ops_pid}" ]] && wait "${dht_ops_pid[@]}" # Wait till all DHT operations are complete
     ipfs id "${selfID}" -f="<addrs>\n" | xargs -n1 -0 ipfs pubsub pub "${broadcast}" # Announce own multiaddresses
