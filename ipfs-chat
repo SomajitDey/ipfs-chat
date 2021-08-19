@@ -605,7 +605,7 @@ send(){
   local msg="$(tmpgen)" recipID="all"
   local first_word="$(cut -z -d ' ' -f 1 "${input}")"
   if [[ "${first_word}" =~ ^@[[:alnum:]]{6}$ ]]; then
-    recipID="$(grep -Eom1 "[[:alnum:]]*${first_word//@/}$" "${sess_peers}")"
+    recipID="$(grep -Eom1 "[[:alnum:]]*${first_word/@/}$" "${sess_peers}")"
     cut -d ' ' -f 2- "${input}" | tr -d $'\n' > "${msg}"
     grep -xq "${first_word}" "${msg}" && return # Skip empty input
     local prefix="PM to $(grep -m1 "${first_word}" "${peers}") $(date +"%a %H:%M:%S") -- "
@@ -629,11 +629,14 @@ send(){
 
 ui(){
   # Brief: UI event-loop. Window numbering: 1(Top Left) 2(Top Right) 3(Spanning Bottom)
-    local PM_buffer="$(tmpgen)" file_buffer="$(tmpgen)"
+    local PM_buffer="$(tmpgen)" txt_buffer="$(tmpgen)"
     local input_help="\Zb\Z4Nick: \Zu\Z0${nick}\Zn \Zb\Z4peerID: \Zu\Z0@${selfID:${#selfID}-6:6}\Zn
 \Zb\Z4General-Message:\Z1 Type, then \Z4Send\Z1 (or press \Z4Enter\Z1)\Zn
 \Zb\Z4Fle-sharing:\Z2 Drag-n-drop file/directory, or use \Z4Explorer\Zn
 \Zb\Z4Private-Message:\Z5 Select peer using \Z4PM\Z5, then type and \Z4Send\Zn"
+    local chat_title="Room: ${room}"
+    local peers_title="Online-peers"
+    local peering_mode="\Zb\Z4${connect_mode:-"WAN+LAN"}\Zn"
 
   while :;do
     # Dimensions are computed just before calling `dialog` to accomodate for the latest terminal window size changes
@@ -649,15 +652,15 @@ ui(){
     fi # Conditionality decreases lag between pressing Send and subsequent chatbox update
 
     DIALOG_CANCEL=4 dialog --keep-tite \
-      --title "Room: ${room}" --begin 0 0 --tailboxbg "${chat}" "${win12_height}" "${win1_width}" \
-      --and-widget \
-      --title "Online-peers" --begin 0 "${win1_width}" --tailboxbg "${peers}" "${win12_height}" "${win2_width}" \
+      --title "${chat_title}" --begin 0 0 --tailboxbg "${chat}" "${win12_height}" "${win1_width}" \
+      --and-widget --colors --hline "${peering_mode}" \
+      --title "${peers_title}" --begin 0 "${win1_width}" --tailboxbg "${peers}" "${win12_height}" "${win2_width}" \
       --and-widget --colors \
       --no-shadow --title "Press Esc to exit" --begin "$((tty_height-win3_height))" 0 \
       --ok-label "Send" --cancel-label "Explorer" \
       --extra-button --extra-label "Chat" \
       --help-button --help-label "PM" \
-      --inputbox "${input_help}" "${win3_height}" "${win3_width}" "$(cat "${PM_buffer}" "${file_buffer}")" \
+      --inputbox "${input_help}" "${win3_height}" "${win3_width}" "$(cat "${PM_buffer}" "${txt_buffer}")" \
       2> "${input}"
       local exit_code=$?
 
@@ -666,22 +669,23 @@ ui(){
       case "${exit_code}" in
         0) # Button: Send
            send 
-           : > "${PM_buffer}"; : > "${file_buffer}"
+           : > "${PM_buffer}"; : > "${txt_buffer}"
            ;;
         2) # Button: PM
-           dialog --keep-tite --no-shadow --exit-label "Back" --ok-label "Select" \
-           --title "Online-peers" --begin 0 0 --menu "Choose peer" "${tty_height}" "${tty_width}" "${tty_height}" \
+           sed -E s/^@[[:alnum:]]{6}[[:blank:]]?// "${input}" > "${txt_buffer}" # Put anything except recipID in buffer
+           dialog --keep-tite --no-shadow --colors --hline "${peering_mode}" --exit-label "Back" --ok-label "Select" \
+           --title "${peers_title}" --begin 0 0 --menu "Choose peer" "${tty_height}" "${tty_width}" "${tty_height}" \
            $(awk '{print $2,$1}' "${peers}") 2> "${PM_buffer}" &&  echo -n ' ' >> "${PM_buffer}"
            ;;
         3) # Button: Chat
            dialog --keep-tite --no-shadow --scrollbar --exit-label "Back" \
-           --title "Room: ${room}" --begin 0 0 --textbox "${chat}" "${tty_height}" "${tty_width}"
-           : > "${PM_buffer}"; : > "${file_buffer}"
+           --title "${chat_title}" --begin 0 0 --textbox "${chat}" "${tty_height}" "${tty_width}"
+           : > "${PM_buffer}"; : > "${txt_buffer}"
            ;;
         4) # Button: Explorer
            dialog --keep-tite --colors --begin 0 0 \
            --title "Help: \Z1Tab\Zn for choosing window; \Z1Spacebar\Zn for autocomplete or select/copy" \
-           --fselect "${PWD}/" "${win12_height}" "${tty_width}" 2> "${file_buffer}"
+           --fselect "${PWD}/" "${win12_height}" "${tty_width}" 2> "${txt_buffer}"
            ;;
         1 | *) # Ctrl-C or Esc
            local confirm_quit="Shared file download is in progress. Still wanna quit?"
