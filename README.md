@@ -110,10 +110,12 @@ Multiple instances of `ipfs-chat` may be run for accessing different chatrooms c
 You can test `ipfs-chat` by running multiple instances on your computer. Simply use different nicknames and join the same chatroom. Example: Connect to the internet and do the following.
 
 ```shell
-ipfs-chat -b -c '/tmp/ipfs-chat' -n 'partner' # In one terminal
+ipfs-chat -W -b -c '/tmp/ipfs-chat' -n 'partner' # In one terminal
 ipfs-chat -b # In another terminal
 # -b above enables bandwidth stats. Drop it if you are not interested in those stats.
 ```
+
+Depending on your internet speed, state of the public IPFS network (WAN-DHT) and durations for which other chatroom peers have been online, peer discovery may take a while (upto ~ 30 seconds according to my tests).
 
 Test further. Disconnect from the internet and run the above two instances on your local machine (or two LAN-connected hosts) with the `-l` or `-L` flag.
 
