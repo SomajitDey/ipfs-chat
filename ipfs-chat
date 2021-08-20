@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Details: See info and usage functions below
-# Warning: This code closes all background processes in the current terminal session on exit # TODO:
 
-export version="0.2.3 (alpha)"
+export version="0.2.4 (alpha)"
 
 info(){
   # Brief: Info about ipfs-chat
@@ -191,6 +190,8 @@ parse_cmdline(){
 parse_cmdline "$@"
 
 info
+echo "DL dir: $(tput smso)${dldir}$(tput rmso)" >&2
+echo "Max filesize: $(tput setaf 1)$(((max_dl_MB>=0)) && echo "${max_dl_MB} MB" || echo 'N/A; Use -D flag')$(tput sgr0)" >&2
 
 cache_peer(){
   # Brief: Cache peerID or multiaddress given as argument. The cache will be used by con_cull
@@ -282,7 +283,6 @@ ipfs_config(){
   echo "$(tput cuu1; tput ed)Status: Getting node online (launching IPFS daemon)..."
   until ipfs swarm peers;do
     flock -sF "${global_fs}" ipfs daemon --enable-pubsub-experiment --enable-namesys-pubsub &   
-    # TODO: Once main exit trap is refactored, perhaps we can do away with setsid.
     sleep 0.1
   done &>/dev/null
   rm -f "${IPFS_PATH}/config-pre-"* # Remove config backup files generated with `ipfs config profile apply`
@@ -323,9 +323,9 @@ config(){
     local file="${1}" width="$(($(flock -s "${cb_wd}" cat "${cb_wd}")-5))" # Read lock; note option -s in flock
     if [[ -n "${file}" ]]; then
       local buff="$(tmpgen)"
-      fold -w "${width}" "${file}" > "${buff}" && flock "${file}" mv "${buff}" "${file}" # In-place, atomic edit
+      fold -s -w "${width}" "${file}" > "${buff}" && flock "${file}" mv "${buff}" "${file}" # In-place, atomic edit
     else
-      fold -w "${width}"
+      fold -s -w "${width}"
     fi
   }; export -f lwrap
   
@@ -457,7 +457,6 @@ check_mime_type(){
 file_unpack(){
   # Brief: Download and decrypt shared file
   # Usage: file_unpack <file-hash> <IPFS-CID> <filename>
-  # TODO: MIME-type checking of filename extension using a list of all common mime-types. Command `file -ib`, --mime-type doesn't work for RHEL
   # TODO: Ask user for permission to download instead of rejecting for size>max_dl_MB
   flock -s 3
   local dec_hash="${1}" cid="${2}" dlpath="${dldir}/${3}"
@@ -548,11 +547,12 @@ peering_daemon(){
     #ipfs dht provide "${nonce}" & dht_ops_pid+=($!) # TODO: TBD: Isnt `ipfs add` enough? `ipfs dht provide` takes loooong time
 
     peerID_list=() # Would store peerIDs seen in this pass
-    while read -r -t 5 peerID; do # Connecting to peers and importing their latest pubkeys
+    while read -r -t 5 peerID; do # Connecting to peers and importing their latest pubkeys. Exp: No timeout messes things up
       ((peerID_list["${peerID}"] != 1)) || continue # peerID handled already, so move on
       peerID_list["${peerID}"]=1 # Add to list so that other iterations won't handle this peerID again
       peer_pubkey_nick -n "${peerID}" &>/dev/null & dht_ops_pid+=($!) # Notice the nocache flag -n forcing IPNS update      
-    done < <(cat <(ipfs pubsub peers "${topic}") <(ipfs pubsub peers "${broadcast}") <(ipfs dht findprovs "${nonce}")) # Makes things concurrent
+    done < <(cat <(ipfs pubsub peers "${topic}") <(ipfs pubsub peers "${broadcast}") <(timeout 5.5 ipfs dht findprovs "${nonce}"))
+    # Makes things concurrent. Note: Without the `ipfs dht` timeout, `ps` would be replete with older `cat` and `ipfs dht`
 
     [[ -n "${dht_ops_pid}" ]] && wait "${dht_ops_pid[@]}" # Wait till all DHT operations are complete
     ipfs id "${selfID}" -f="<addrs>\n" | xargs -n1 -0 ipfs pubsub pub "${broadcast}" # Announce own multiaddresses
@@ -606,8 +606,8 @@ send(){
   local msg="$(tmpgen)" recipID="all"
   local first_word="$(cut -z -d ' ' -f 1 "${input}")"
   if [[ "${first_word}" =~ ^@[[:alnum:]]{6}$ ]]; then
-    recipID="$(grep -Eom1 "[[:alnum:]]*${first_word//@/}$" "${sess_peers}")"
-    cut -z -d ' ' -f 2- "${input}" > "${msg}"
+    recipID="$(grep -Eom1 "[[:alnum:]]*${first_word/@/}$" "${sess_peers}")"
+    cut -d ' ' -f 2- "${input}" | tr -d $'\n' > "${msg}"
     grep -xq "${first_word}" "${msg}" && return # Skip empty input
     local prefix="PM to $(grep -m1 "${first_word}" "${peers}") $(date +"%a %H:%M:%S") -- "
   else  
@@ -630,11 +630,14 @@ send(){
 
 ui(){
   # Brief: UI event-loop. Window numbering: 1(Top Left) 2(Top Right) 3(Spanning Bottom)
-    local PM_buffer="$(tmpgen)" file_buffer="$(tmpgen)"
+    local PM_buffer="$(tmpgen)" txt_buffer="$(tmpgen)"
     local input_help="\Zb\Z4Nick: \Zu\Z0${nick}\Zn \Zb\Z4peerID: \Zu\Z0@${selfID:${#selfID}-6:6}\Zn
 \Zb\Z4General-Message:\Z1 Type, then \Z4Send\Z1 (or press \Z4Enter\Z1)\Zn
 \Zb\Z4Fle-sharing:\Z2 Drag-n-drop file/directory, or use \Z4Explorer\Zn
 \Zb\Z4Private-Message:\Z5 Select peer using \Z4PM\Z5, then type and \Z4Send\Zn"
+    local chat_title="Room: ${room}"
+    local peers_title="Online-peers"
+    local peering_mode="\Zb\Z4${connect_mode:-"WAN+LAN"}\Zn"
 
   while :;do
     # Dimensions are computed just before calling `dialog` to accomodate for the latest terminal window size changes
@@ -650,15 +653,15 @@ ui(){
     fi # Conditionality decreases lag between pressing Send and subsequent chatbox update
 
     DIALOG_CANCEL=4 dialog --keep-tite \
-      --title "Room: ${room}" --begin 0 0 --tailboxbg "${chat}" "${win12_height}" "${win1_width}" \
-      --and-widget \
-      --title "Online-peers" --begin 0 "${win1_width}" --tailboxbg "${peers}" "${win12_height}" "${win2_width}" \
+      --title "${chat_title}" --begin 0 0 --tailboxbg "${chat}" "${win12_height}" "${win1_width}" \
+      --and-widget --colors --hline "${peering_mode}" \
+      --title "${peers_title}" --begin 0 "${win1_width}" --tailboxbg "${peers}" "${win12_height}" "${win2_width}" \
       --and-widget --colors \
       --no-shadow --title "Press Esc to exit" --begin "$((tty_height-win3_height))" 0 \
       --ok-label "Send" --cancel-label "Explorer" \
       --extra-button --extra-label "Chat" \
       --help-button --help-label "PM" \
-      --inputbox "${input_help}" "${win3_height}" "${win3_width}" "$(cat "${PM_buffer}" "${file_buffer}")" \
+      --inputbox "${input_help}" "${win3_height}" "${win3_width}" "$(cat "${PM_buffer}" "${txt_buffer}")" \
       2> "${input}"
       local exit_code=$?
 
@@ -667,22 +670,23 @@ ui(){
       case "${exit_code}" in
         0) # Button: Send
            send 
-           : > "${PM_buffer}"; : > "${file_buffer}"
+           : > "${PM_buffer}"; : > "${txt_buffer}"
            ;;
         2) # Button: PM
-           dialog --keep-tite --no-shadow --exit-label "Back" --ok-label "Select" \
-           --title "Online-peers" --begin 0 0 --menu "Choose peer" "${tty_height}" "${tty_width}" "${tty_height}" \
+           sed -E s/^@[[:alnum:]]{6}[[:blank:]]?// "${input}" > "${txt_buffer}" # Put anything except recipID in buffer
+           dialog --keep-tite --no-shadow --colors --hline "${peering_mode}" --exit-label "Back" --ok-label "Select" \
+           --title "${peers_title}" --begin 0 0 --menu "Choose peer" "${tty_height}" "${tty_width}" "${tty_height}" \
            $(awk '{print $2,$1}' "${peers}") 2> "${PM_buffer}" &&  echo -n ' ' >> "${PM_buffer}"
            ;;
         3) # Button: Chat
-           dialog --keep-tite --no-shadow --exit-label "Back"\
-           --title "Room: ${room}" --begin 0 0 --textbox "${chat}" "${tty_height}" "${tty_width}"
-           : > "${PM_buffer}"; : > "${file_buffer}"
+           dialog --keep-tite --no-shadow --scrollbar --exit-label "Back" \
+           --title "${chat_title}" --begin 0 0 --textbox "${chat}" "${tty_height}" "${tty_width}"
+           : > "${PM_buffer}"; : > "${txt_buffer}"
            ;;
         4) # Button: Explorer
            dialog --keep-tite --colors --begin 0 0 \
            --title "Help: \Z1Tab\Zn for choosing window; \Z1Spacebar\Zn for autocomplete or select/copy" \
-           --fselect "${PWD}/" "${win12_height}" "${tty_width}" 2> "${file_buffer}"
+           --fselect "${PWD}/" "${win12_height}" "${tty_width}" 2> "${txt_buffer}"
            ;;
         1 | *) # Ctrl-C or Esc
            local confirm_quit="Shared file download is in progress. Still wanna quit?"
