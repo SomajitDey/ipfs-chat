@@ -127,15 +127,17 @@ Should you ever need to change the size of the terminal `ipfs-chat` is running o
 
 Name of the room is the shared secret. 
 
-Every participant provides a (rendezvous) file at regular intervals whose content is a time-based nonce derived from the shared secret, viz. the room name. Along with this, participants publish their multiaddresses at a pubsub topic that is also derived from the room name.
+Every participant provides a (rendezvous) file at regular intervals whose content is a time-based nonce derived from the shared secret, viz. the room name. Along with this, participants publish their public (WAN) multiaddresses at a pubsub topic that is also derived from the room name.
 
-To join the chat network, viz. the room, one needs to connect to as many online participants as possible. This is done by first querying the DHT for the providers of the rendezvous file and then swarm connecting to those peer IDs. Once in the net, participants can also listen to the pubsub topic where the multiaddresses are published in order to discover peers they are not directly connected to. To accommodate for peers leaving and joining the room, the query and swarm connect steps are iterated at regular intervals.
+To join the chat network, viz. the room, one needs to connect to as many online participants as possible. This is done by first querying the DHT for the providers of the rendezvous file and then swarm connecting to those peer IDs. Participants also listen to the pubsub topic where the multiaddresses are published in order to discover peers they are not directly connected to. To accommodate for peers leaving and joining the room, the query and swarm connect steps are iterated at regular intervals.
 
 Peers behind NAT use [autorelay or p2p-circuit](https://github.com/ipfs/go-ipfs/blob/master/docs/experimental-features.md#autorelay) to be accessible by others.
 
 Local (LAN based) discovery is also enabled ([Discovery.MDNS.Enabled=true](https://github.com/ipfs/go-ipfs/blob/master/docs/config.md)).
 
 Also, if a peer sees a message (over pubsub) from a peer that it is not directly connected to, it tries to connect to it immediately.
+
+[IPNS over pubsub](https://github.com/ipfs/go-ipfs/blob/master/docs/experimental-features.md#ipns-pubsub) is also used to speed up peer discovery. Every chatroom peer resolves the same IPNS keys in order to subscribe to the same name-specific topics. Because of this, some peers are already connected when the peer discovery using DHT and pubsub are launched.
 
 **Note**: The rendezvous nonce changes every 2 mins. Due to this, a peer might be shown to be online upto 2 mins after it goes offline.
 
