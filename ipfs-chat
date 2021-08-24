@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Details: See info and usage functions below
 
-export version="0.2.4 (alpha)"
+export version="0.2.5 (alpha)"
 
 info(){
   # Brief: Info about ipfs-chat
@@ -96,6 +96,11 @@ dep_check(){
   if ! command -v tput &>/dev/null; then
     echo -e "Required: tput\nSource: Native package repository"
     echo -e "Ref: https://command-not-found.com/tput\n"
+    quit="yes"
+  fi
+  if ! command -v jq &>/dev/null; then
+    echo -e "Required: jq\nSource: Native package repository"
+    echo -e "Ref: https://stedolan.github.io/jq/download/\n"
     quit="yes"
   fi
   if ! command -v argon2 &>/dev/null; then
@@ -194,9 +199,9 @@ echo "DL dir: $(tput smso)${dldir}$(tput rmso)" >&2
 echo "Max filesize: $(tput setaf 1)$(((max_dl_MB>=0)) && echo "${max_dl_MB} MB" || echo 'N/A; Use -D flag')$(tput sgr0)" >&2
 
 cache_peer(){
-  # Brief: Cache peerID or multiaddress given as argument. The cache will be used by con_cull
-  local peerID="${1}"
-  grep -q -m1 "${peerID}" "${sess_peers}" || flock "${sess_peers}" echo "${peerID}" >> "${sess_peers}"
+  # Brief: Cache multiaddress given as argument. The cache will be used by con_cull
+  echo "${1}" | grep -o '/p2p/[[:alnum:]]*' | grep -vf "${sess_peers}" | \
+    flock "${sess_peers}" xargs -r -n1 >> "${sess_peers}"
 } &>/dev/null; export -f cache_peer
 
 ipfs_config(){
@@ -225,7 +230,7 @@ ipfs_config(){
   if ! ipfs swarm peers; then
     rm -rf "${IPFS_PATH}/room#"*
     rm -f "${sess_peers}" "${sess_uplds}"
-    ipfs pin ls --type=recursive --quiet | xargs -n1 ipfs pin rm # Remove stale pins to destress reprovider
+    ipfs pin ls --type=recursive --quiet | xargs -r -n1 -P0 ipfs pin rm # Remove stale pins to destress reprovider
   fi &>/dev/null # Can't be non-blocking. Otherwise launching IPFS daemon shows, "ERROR: lock ... :someone else has lock"
 
   export global_fs="${HOME}/.filestore-ipfs-chat"; mkdir -p "${global_fs}"
@@ -266,6 +271,7 @@ ipfs_config(){
       ipfs config --bool Swarm.EnableAutoRelay true
       ;;
   esac
+  rm -f "${IPFS_PATH}/config-pre-"* # Remove config backup files generated with `ipfs config profile apply`
 
   echo "$(tput cuu1; tput ed)Status: Configuring ports..."
   pscan(){
@@ -281,15 +287,20 @@ ipfs_config(){
   local gateway_port="$(pscan "${API_port}")"; ipfs config Addresses.Gateway "/ip4/127.0.0.1/tcp/${gateway_port:=8080}"
 
   echo "$(tput cuu1; tput ed)Status: Getting node online (launching IPFS daemon)..."
-  until ipfs swarm peers;do
-    flock -sF "${global_fs}" ipfs daemon --enable-pubsub-experiment --enable-namesys-pubsub &   
-    sleep 0.1
-  done &>/dev/null
-  rm -f "${IPFS_PATH}/config-pre-"* # Remove config backup files generated with `ipfs config profile apply`
-  echo "$(tput cuu1; tput ed)Status: IPFS node is configured"
+  launch_ipfs(){
+    # Brief: Launch IPFS daemon in the background, if not already running. Reflect online status through exit code
+    ipfs swarm peers || \
+      [[ "$(flock -sF "${global_fs}" ipfs daemon ${@} | grep -iom1 'Daemon is ready' & tail -f --pid=$! /dev/null)" ]]
+  } &>/dev/null; export -f launch_ipfs
+
+  if launch_ipfs --enable-pubsub-experiment --enable-namesys-pubsub ; then
+    echo "$(tput cuu1; tput ed)Status: IPFS node is configured"
+  else
+    echo "Error: Failed to launch IPFS daemon"; exit 1
+  fi 2>/dev/null
   declare -rigx daemon_launch_time="${EPOCHSECONDS}"
   
-  export selfID="$(ipfs config Identity.PeerID)"; cache_peer "${selfID}"
+  export selfID="$(ipfs config Identity.PeerID)"; cache_peer "/p2p/${selfID}"
   export topic="$(kdf "ipfs-chat" "${room}")" broadcast="$(kdf "peer-addresses" "${room}")"
 } >&2; export -f ipfs_config
 
@@ -344,7 +355,7 @@ safe_gc(){
     flock -n "${lock}" ipfs refs local # This doesn't take much time
   else
     ipfs refs local
-  fi | xargs -n1 ipfs block rm # This is the time consuming part
+  fi | xargs -r -n1 ipfs block rm # This is the time consuming part
 } &>/dev/null 3<"${IPFS_PATH}/config"; export -f safe_gc
 
 safe_gc & echo "${!}" >> "${bg_pids}"
@@ -404,7 +415,7 @@ connect_peer(){
       cache_peer "${multiaddress}" # Add multiaddress of both peer and any relay it is accessed through
     done
   else
-    cache_peer "${peerID}"
+    cache_peer "/p2p/${peerID}"
     return 1
   fi
 } &>/dev/null; export -f connect_peer
@@ -522,13 +533,9 @@ echo "Status: Launching peer-discovery over pubsub..." >&2; pubsub_conn & echo "
 con_cull(){
   # Brief: Cull all connections except those in the cache, and the connection to relay (if any)
   # Purpose: Reducing bandwidth usage by killing all irrelevant connections
-  local curr_self_address="$(ipfs id "${selfID}" -f="<addrs>\n")"
-  local multiaddress peerID
-  for multiaddress in $(ipfs swarm peers); do
-    peerID="${multiaddress##*/}"
-    grep -q -m1 "${peerID}" "${sess_peers}" || (echo "${curr_self_address}" | grep -q -m1 "${peerID}") || \
-      ipfs swarm disconnect "/p2p/${peerID}"
-  done
+  local own_relay="$(ipfs id "${selfID}" -f="<addrs>\n" | grep -o '/p2p/[[:alnum:]]*' | sort -u)"
+  ipfs swarm peers | grep -o '/p2p/[[:alnum:]]*' | grep -vf "${sess_peers}" | grep -vf <(echo "${own_relay}") | \
+    xargs -r -n1 ipfs swarm disconnect
 } &>/dev/null; export -f con_cull
 
 declare -irx ICPDI="${ICPDI:=30}" # IPFS_CHAT_PEER_DISCOVERY_INTERVAL in seconds (type: integer)
@@ -540,6 +547,8 @@ peering_daemon(){
   local -A peerID_list # Associative array
 
   local -r start_peer_discov="${EPOCHSECONDS}"
+  # Subscribe to common topics over IPNS pubsub so that peer discovery becomes faster.
+  (ipfs bootstrap | grep -o '[[:alnum:]]*$' | xargs -n1 -I{} -P0 ipfs name resolve --dhtt=1s /ipns/{}) &
   while :;do
     dht_ops_pid=() # Stores pid's of background DHT operations executing in the current pass
     local timestamp="${EPOCHSECONDS}" # Current Unix time
@@ -555,7 +564,8 @@ peering_daemon(){
     # Makes things concurrent. Note: Without the `ipfs dht` timeout, `ps` would be replete with older `cat` and `ipfs dht`
 
     [[ -n "${dht_ops_pid}" ]] && wait "${dht_ops_pid[@]}" # Wait till all DHT operations are complete
-    ipfs id "${selfID}" -f="<addrs>\n" | xargs -n1 -0 ipfs pubsub pub "${broadcast}" # Announce own multiaddresses
+    ipfs id "${selfID}" -f="<addrs>\n" | grep -vf <(ipfs diag sys | jq -r .net.interface_addresses[]) | \
+      xargs -n1 -r -0 ipfs pubsub pub "${broadcast}" # Announce own public multiaddresses over pubsub
     ipfs pin rm "${nonce}" &>/dev/null & # Otherwise reprovider will continue announcing stale nonce. Pin still necessary to save from auto-GC
     flock "${peers_buffer}" sort -uo "${peers_buffer}" "${peers_buffer}" && mv "${peers_buffer}" "${peers_ready}" # In-place sort followed by atomic move. -u defends against peers_buffer containing repetitions
     if ((EPOCHSECONDS-start_peer_discov > 30)); then
