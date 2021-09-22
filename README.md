@@ -1,5 +1,7 @@
 # IPFS-Chat
 
+[![Featured](https://img.shields.io/badge/Featured%20in-Awesome%20IPFS-green.svg)](https://awesome.ipfs.io/apps/)
+
 1. Real-time, secure, peer-to-peer messaging using [IPFS pubsub](https://github.com/ipfs/go-ipfs/blob/master/docs/experimental-features.md#ipfs-pubsub). Allows in-chat file/directory sharing and private messaging. Works over both internet and LAN. Built-in NAT-traversal using [IPFS autorelay](https://github.com/ipfs/go-ipfs/blob/master/docs/experimental-features.md#autorelay).
 2. Very basic terminal-based UI without any eye candy.
 3. The usual *Create Alias/Nick* + *Create/Join room* workflow (akin to [IRC](https://en.wikipedia.org/wiki/Internet_Relay_Chat)).
@@ -13,15 +15,40 @@
 
 ***Keywords*:** p2p; distributed; server-less; broker-less; TUI; secure; texting; file-sharing; ipfs; pubsub; privacy
 
+## Table of Contents  
+[![tocgen](https://img.shields.io/badge/Generated%20using-tocgen-blue)](https://github.com/SomajitDey/tocgen)  
+  - [IPFS-Chat](#ipfs-chat)  
+    - [Installation](#installation)  
+        - [Download:](#download:)  
+        - [Install:](#install:)  
+    - [Usage](#usage)  
+        - [Defaults:](#defaults:)  
+        - [Multiple-instances:](#multiple-instances:)  
+    - [Snapshot](#snapshot)  
+    - [Testing](#testing)  
+    - [Changing terminal window size](#changing-terminal-window-size)  
+    - [Peer discovery](#peer-discovery)  
+    - [Security](#security)  
+    - [Messaging](#messaging)  
+    - [File or directory sharing](#file-or-directory-sharing)  
+    - [Efficiency](#efficiency)  
+    - [Fully decentralized vs (Semi-)centralized](#fully-decentralized-vs-(semi-)centralized)  
+    - [Future directions](#future-directions)  
+    - [Contribute](#contribute)  
+            - [GNU GPL v3-or-later &copy; 2021 Somajit Dey](#gnu-gpl-v3-or-later-&copy; 2021-somajit-dey)  
+#####   
+
 ## Installation
 
 #### Download:
 
 ```shell
 git clone --depth 1 --no-tags https://github.com/SomajitDey/ipfs-chat; cd ipfs-chat
+```
 
-# Or,
+or, 
 
+```shell
 wget https://raw.githubusercontent.com/SomajitDey/ipfs-chat/main/ipfs-chat \
 && chmod +x ./ipfs-chat
 ```
@@ -30,12 +57,15 @@ wget https://raw.githubusercontent.com/SomajitDey/ipfs-chat/main/ipfs-chat \
 
 ```bash
 sudo mv ./ipfs-chat /usr/local/bin
-
-# Or, if you don't have sudo priviledge:
-
-mkdir -p ~/.bin; mv ./ipfs-chat ~/.bin; export PATH="${PATH}:${HOME}/.bin"
-# Also put the last export command inside ${HOME}/.bashrc
 ```
+
+Or, if you don't have sudo priviledge:
+
+```bash
+mkdir -p ~/.bin; mv ./ipfs-chat ~/.bin; export PATH="${PATH}:${HOME}/.bin"
+```
+
+Also put the last export command inside `${HOME}/.bashrc`.
 
 Do you want an auto-install feature, such as `./ipfs-chat -i`? If so, please [post](#bug-reports-and-feedbacks) a feature-request.
 
@@ -112,8 +142,9 @@ You can test `ipfs-chat` by running multiple instances on your computer. Simply 
 ```shell
 ipfs-chat -W -b -c '/tmp/ipfs-chat' -n 'partner' # In one terminal
 ipfs-chat -b # In another terminal
-# -b above enables bandwidth stats. Drop it if you are not interested in those stats.
 ```
+
+`-b` above enables bandwidth stats. Drop it if you are not interested in those stats.
 
 Depending on your internet speed, state of the public IPFS network (WAN-DHT) and durations for which other chatroom peers have been online, peer discovery may take a while (upto ~ 30 seconds according to my tests).
 
@@ -216,10 +247,12 @@ Apart from its dependence on a set of of bootstrap and relay nodes, `ipfs-chat` 
 1. Detect and block malicious peers. All direct connections to blocked peers are culled. Users can also block (and unblock later) specific nicks (regex pattern), peer IDs. While blocking, users can opt for - 1. Block permanently; 2. For present session only. **TBD**: News of this blocking (who blocked whom and when) may or may not be published over pubsub for other peers to see and decide for themselves.
 2. Offline mode such that even if a peer goes offline, it can obtain the missed messages when it comes back online [This may well be beyond my capabilities]. Once [`orbit-db-cli`](https://github.com/orbitdb/orbit-db-cli) matures, it might help achieve this. Random idea: Online peers publish CIDs of time-based logs at regular intervals over pubsub. Logs are directories containing chats - one message in one file. Even if logs of two peers don't match exactly, they will have many files in common, thus achieving major deduplication and also helping availability across the ipfs-chat network.
 
-## Bug-reports and Feedbacks
+## Contribute
 
 Post at [issues](https://github.com/SomajitDey/ipfs-chat/issues) and [discussion](https://github.com/SomajitDey/ipfs-chat/discussions), or [write to me](mailto://hereistitan@gmail.com).
 
+[![Sponsor](https://www.buymeacoffee.com/assets/img/custom_images/yellow_img.png)](https://buymeacoffee.com/SomajitDey)
+
 ------
 
-###### [GNU GPL v3-or-later](https://github.com/SomajitDey/ipfs-chat/blob/main/LICENSE) &copy; 2021 Somajit Dey
+###### GNU GPL v3-or-later &copy; 2021 Somajit Dey
