@@ -19,11 +19,11 @@
 [![tocgen](https://img.shields.io/badge/Generated%20using-tocgen-blue)](https://github.com/SomajitDey/tocgen)  
   - [IPFS-Chat](#ipfs-chat)  
     - [Installation](#installation)  
-        - [Download:](#download:)  
-        - [Install:](#install:)  
+        - [Download:](#download)  
+        - [Install:](#install)  
     - [Usage](#usage)  
-        - [Defaults:](#defaults:)  
-        - [Multiple-instances:](#multiple-instances:)  
+        - [Defaults:](#defaults)  
+        - [Multiple-instances:](#multiple-instances)  
     - [Snapshot](#snapshot)  
     - [Testing](#testing)  
     - [Changing terminal window size](#changing-terminal-window-size)  
@@ -32,10 +32,9 @@
     - [Messaging](#messaging)  
     - [File or directory sharing](#file-or-directory-sharing)  
     - [Efficiency](#efficiency)  
-    - [Fully decentralized vs (Semi-)centralized](#fully-decentralized-vs-(semi-)centralized)  
+    - [Fully decentralized vs (Semi-)centralized](#fully-decentralized-vs-semi-centralized)  
     - [Future directions](#future-directions)  
     - [Contribute](#contribute)  
-            - [GNU GPL v3-or-later &copy; 2021 Somajit Dey](#gnu-gpl-v3-or-later-&copy; 2021-somajit-dey)  
 #####   
 
 ## Installation
@@ -63,11 +62,10 @@ Or, if you don't have sudo priviledge:
 
 ```bash
 mkdir -p ~/.bin; mv ./ipfs-chat ~/.bin; export PATH="${PATH}:${HOME}/.bin"
+# Also put the last export command inside ${HOME}/.bashrc
 ```
 
-Also put the last export command inside `${HOME}/.bashrc`.
-
-Do you want an auto-install feature, such as `./ipfs-chat -i`? If so, please [post](#bug-reports-and-feedbacks) a feature-request.
+Do you want an auto-install feature, such as `./ipfs-chat -i`? If so, please [post](#contribute) a feature-request.
 
 ## Usage
 
