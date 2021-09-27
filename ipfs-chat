@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
+export LANGUAGE=C LANG=C LC_ALL=C
 # Details: See info and usage functions below
 
-export version="0.2.5 (alpha)"
+export version="0.2.6 (beta)"
 
 info(){
   # Brief: Info about ipfs-chat
