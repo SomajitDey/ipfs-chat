@@ -2,7 +2,7 @@
 export LANGUAGE=C LANG=C LC_ALL=C
 # Details: See info and usage functions below
 
-export version="0.2.8 (beta)"
+export version="0.2.9 (beta)"
 
 info(){
   # Brief: Info about ipfs-chat
@@ -17,7 +17,7 @@ Version: " >&2
 
 usage(){
   # Brief: Show help and exit
-  echo -e "\nUsage: ipfs-chat [-n <nick>] [-r <room>] [-d <file-download-dir>] [-D <max-download-MB>] [-c <ipfs-repo-path>] [-o <chat-log-path>] [-w | -l]"
+  echo -e "\nUsage: ipfs-chat [-n <nick>] [-r <room>] [-d <file-download-dir>] [-D <max-download-MB>] [-c <ipfs-repo-path>] [-o <chat-log-path>] [-w | -l] [-b]"
   echo -e "\nNote: -w or -W implies WAN-only connection; -l|-L is LAN-only; To have both WAN & LAN, don't use any of these flags"
   echo -e "\nVersion: ipfs-chat -v"
   echo -e "\nUpdate: ipfs-chat -u [<version e.g. v0.2.6> | <branch-name>]"
@@ -206,6 +206,7 @@ echo "Max filesize: $(tput setaf 1)$(((max_dl_MB>=0)) && echo "${max_dl_MB} MB" 
 
 cache_peer(){
   # Brief: Cache multiaddress given as argument. The cache will be used by con_cull
+  ipfs swarm peering add "${1}" # Add to peering subsystem (go-ipfs >= v0.10.0) # TODO: Ain't relay protected from ConnMgr?
   echo "${1}" | grep -o '/p2p/[[:alnum:]]*' | grep -vf "${sess_peers}" | \
     flock "${sess_peers}" xargs -r -n1 >> "${sess_peers}"
 } &>/dev/null; export -f cache_peer
@@ -215,8 +216,10 @@ ipfs_config(){
   # Note: Use random ports for everything so that multiple IPFS nodes can coexist on the same machine
   # Note: Most configs below are for reducing bandwidth/CPU/disk usage
   echo "Status: Configuring IPFS node..."
-  if ! ipfs id &>/dev/null; then
-    (ipfs init --profile lowpower && ipfs config profile apply randomports) >/dev/null || \
+  if [[ "$(ipfs config 'ipfs-chat-version' 2>/dev/null)" != "${version}" ]] || \
+    [[ "$(ipfs config 'App' 2>/dev/null)" != "ipfs-chat" ]]; then
+    (ipfs init --profile lowpower || ipfs config profile apply lowpower \
+      && ipfs config profile apply randomports) &>/dev/null || \
       { echo "Error: Failed to create IPFS repo at ${IPFS_PATH}"; exit 1;}
     ipfs config Pubsub.Router gossipsub
     ipfs config Ipns.RepublishPeriod 2m0s
@@ -227,9 +230,12 @@ ipfs_config(){
     ipfs config Swarm.ConnMgr.Type none
     ipfs config --bool Swarm.EnableRelayHop false
     ipfs config --json Experimental.FilestoreEnabled true
+    ipfs config 'ipfs-chat-version' "${version}"
+    ipfs config 'App' "ipfs-chat"
   fi
 
   export sess_peers="${IPFS_PATH}/session_peers" # This file caches all ipfs-chat peers (multiaddresses) seen when node is online
+  local prev_sess_peers="$(cat "${sess_peers}" 2>/dev/null)" # Holds peers from last session, if any
   export sess_uplds="${IPFS_PATH}/session_uploads" # Maps SHA1 hash of file to CID of its hash-encrypted object
 
   # Repo cleanup when no other instance is running; i.e. node is offline
@@ -253,6 +259,7 @@ ipfs_config(){
     LAN)
       ipfs config profile apply local-discovery &>/dev/null # Revert changes done by Server profile
       #ipfs config --bool Discovery.MDNS.Enabled true
+      ipfs config --json Addresses.NoAnnounce '[]'
       ipfs bootstrap rm all &>/dev/null # For faster startup
       # Disable NAT traversal
       ipfs config --bool Swarm.DisableNatPortMap true
@@ -265,9 +272,13 @@ ipfs_config(){
         ipfs config profile apply server &>/dev/null
         # Server profile disables swarm connecting to private IPs. Doesn't announce own private IPs. Disables MDNS discovery
         #ipfs config --bool Discovery.MDNS.Enabled false
+        ipfs config show | \
+        jq '.Addresses.NoAnnounce += ["/ip4/127.0.0.1/ipcidr/1", "/ip6/::1/ipcidr/1"]' > "${IPFS_PATH}"/.config && \
+        ipfs config replace "${IPFS_PATH}"/.config
       else
         ipfs config profile apply local-discovery &>/dev/null # Revert changes done by Server profile
         #ipfs config --bool Discovery.MDNS.Enabled true
+        ipfs config --json Addresses.NoAnnounce '[]'
       fi
       ipfs bootstrap add default &>/dev/null # For WAN-DHT
       # For NAT traversal
@@ -307,6 +318,12 @@ ipfs_config(){
   declare -rigx daemon_launch_time="${EPOCHSECONDS}"
   
   export selfID="$(ipfs config Identity.PeerID)"; cache_peer "/p2p/${selfID}"
+  (# Prime the network with the peers from last session, if any
+    grep -v "/p2p/${selfID}" <<< "${prev_sess_peers}" | xargs -r -n1 ipfs swarm connect
+  # Subscribe to common topics over IPNS pubsub so that peer discovery becomes faster
+    ipfs name resolve --dhtt=1s "$(echo -n IPFS-Chat | ipfs add -n --pin=false -Q)" # App-specific key
+    ipfs bootstrap | grep -o '[[:alnum:]]*$' | xargs -r -n1 ipfs name resolve --dhtt=1s # General key
+  ) &>/dev/null &
   export topic="$(kdf "ipfs-chat" "${room}")" broadcast="$(kdf "peer-addresses" "${room}")"
 } >&2; export -f ipfs_config
 
@@ -553,8 +570,6 @@ peering_daemon(){
   local -A peerID_list # Associative array
 
   local -r start_peer_discov="${EPOCHSECONDS}"
-  # Subscribe to common topics over IPNS pubsub so that peer discovery becomes faster.
-  (ipfs bootstrap | grep -o '[[:alnum:]]*$' | xargs -n1 -I{} -P0 ipfs name resolve --dhtt=1s /ipns/{}) &
   while :;do
     dht_ops_pid=() # Stores pid's of background DHT operations executing in the current pass
     local timestamp="${EPOCHSECONDS}" # Current Unix time

@@ -166,7 +166,11 @@ Local (LAN based) discovery is also enabled ([Discovery.MDNS.Enabled=true](https
 
 Also, if a peer sees a message (over pubsub) from a peer that it is not directly connected to, it tries to connect to it immediately.
 
-[IPNS over pubsub](https://github.com/ipfs/go-ipfs/blob/master/docs/experimental-features.md#ipns-pubsub) is also used to speed up peer discovery. Every chatroom peer resolves the same IPNS keys in order to subscribe to the same name-specific topics. Because of this, some peers are already connected when the peer discovery using DHT and pubsub are launched.
+[IPNS over pubsub](https://github.com/ipfs/go-ipfs/blob/master/docs/experimental-features.md#ipns-pubsub) is also used to speed up peer discovery. Every chatroom peer resolves the same IPNS key(s) in order to subscribe to the same name-specific topics. Because of this, some peers are already connected when the peer discovery using DHT and pubsub are launched.
+
+During startup, the node tries to connect to the peers from the last session.
+
+For `go-ipfs v0.10.0` onwards, a peer, once discovered, is put into the [peering subsystem](https://docs.ipfs.io/reference/cli/#ipfs-swarm-peering).
 
 **Note**: The rendezvous nonce changes every 2 mins. Due to this, a peer might be shown to be online upto 2 mins after it goes offline.
 
@@ -247,7 +251,14 @@ Apart from its dependence on a set of of bootstrap and relay nodes, `ipfs-chat` 
 
 ## Contribute
 
-Post at [issues](https://github.com/SomajitDey/ipfs-chat/issues) and [discussion](https://github.com/SomajitDey/ipfs-chat/discussions), or [write to me](mailto://hereistitan@gmail.com).
+Post at [issues](https://github.com/SomajitDey/ipfs-chat/issues) and [discussion](https://github.com/SomajitDey/ipfs-chat/discussions), or [write to me](mailto://hereistitan@gmail.com). 
+
+> If creating bug-reports, please provide the following:
+>
+> 1. Version: `ipfs-chat -v`
+> 2. go-IPFS version: `ipfs --version`
+> 3. Your Linux distribution
+> 4. Screenshots
 
 [![Sponsor](https://www.buymeacoffee.com/assets/img/custom_images/yellow_img.png)](https://buymeacoffee.com/SomajitDey)
 
