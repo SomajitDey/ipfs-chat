@@ -2,7 +2,7 @@
 export LANGUAGE=C LANG=C LC_ALL=C
 # Details: See info and usage functions below
 
-export version="0.2.7 (beta)"
+export version="0.2.8 (beta)"
 
 info(){
   # Brief: Info about ipfs-chat
@@ -144,6 +144,7 @@ update(){
   local url="https://raw.githubusercontent.com/SomajitDey/ipfs-chat/${branch:=main}/ipfs-chat"
   local tmp="$(mktemp)" # Using /tmp instead of tmpdir below as tmpdir won't exist for `ipfs-chat -u`
   trap "rm -f ${tmp}" return
+  local tags api_url="https://api.github.com/repos/SomajitDey/ipfs-chat/tags"
   case "${cli_opt}" in
     s)
       [[ -x "${source}" ]] || return 1
@@ -153,6 +154,10 @@ update(){
     d) 
       if timeout 4 curl -sfNL -o "${tmp}" "${url}"; then 
         chmod +x "${tmp}" && mv "${tmp}" "${dest}" # Atomic update
+      elif tags="$(timeout 2 curl -sfNL "${api_url}" 2>/dev/null)"; then
+        echo "Error: Couldn't find the requested tag/branch"
+        jq -r '.[].name' <<< "${tags}" | xargs echo "Releases: "
+        return 1
       else
         echo "Error: Failed to update. Check internet connection."
         return 1
