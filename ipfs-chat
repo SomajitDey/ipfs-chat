@@ -2,7 +2,7 @@
 export LANGUAGE=C LANG=C LC_ALL=C
 # Details: See info and usage functions below
 
-export version="0.2.6 (beta)"
+export version="0.2.7 (beta)"
 
 info(){
   # Brief: Info about ipfs-chat
@@ -20,7 +20,7 @@ usage(){
   echo -e "\nUsage: ipfs-chat [-n <nick>] [-r <room>] [-d <file-download-dir>] [-D <max-download-MB>] [-c <ipfs-repo-path>] [-o <chat-log-path>] [-w | -l]"
   echo -e "\nNote: -w or -W implies WAN-only connection; -l|-L is LAN-only; To have both WAN & LAN, don't use any of these flags"
   echo -e "\nVersion: ipfs-chat -v"
-  echo -e "\nUpdate: ipfs-chat -u"
+  echo -e "\nUpdate: ipfs-chat -u [<version e.g. v0.2.6> | <branch-name>]"
   echo -e "\nGenerate random room name: ipfs-chat -g"
   echo -e "\nEnable shared file extension check against MIME-type: ipfs-chat -e"
   echo ; exit 1
@@ -180,7 +180,7 @@ parse_cmdline(){
       v) echo "${version}"; exit;;
       b) export disable_bandwidth_metrics="false";;
       e) export mime_type_check="enabled";;
-      u) update; exit "${?}";;
+      u) update "${!OPTIND}"; exit "${?}";;
       h|*) usage;;
     esac
   done

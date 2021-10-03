@@ -73,7 +73,7 @@ Do you want an auto-install feature, such as `./ipfs-chat -i`? If so, please [po
 ipfs-chat -r <room> -n <nick> -d <dl dir> -D <max file MB> -c <repo> -o <log> -w|-l -e
 ipfs-chat -g # Generating a random room name, for when your brain can't do it
 ipfs-chat -v # Version
-ipfs-chat -u # Update
+ipfs-chat -u <version>|<branch> # Update
 ipfs-chat -h # Help
 ```
 
@@ -93,7 +93,7 @@ All command-line options/flags are optional. Unobvious options are explained bel
 
 `-e` enables basic MIME-type check for the shared files. Suppose a malicious peer sends you an executable file but scrupulously gives it a .txt extension. `ipfs-chat` would add a .com or .exe extension to the file then. This feature is only available as long as there is a map of MIME-types to extensions at `/etc/mime.types` (e.g. in Debian & Ubuntu). If your distribution doesn't have this map, install it at that path manually after downloading from [here](https://raw.githubusercontent.com/SomajitDey/ipfs-chat/main/mime.types).
 
-`-u` does a manual update of `ipfs-chat`. This option is not very necessary as `ipfs-chat` auto-updates whenever there is internet connection and it is not running in LAN-only mode.
+`-u` does a manual update of `ipfs-chat`. This option is not very necessary as `ipfs-chat` auto-updates whenever there is internet connection and it is not running in LAN-only mode. `ipfs-chat -u` may be passed the version-tag (e.g. `v0.2.4`) or git-branch (e.g. `dev` or `issue-15`) to update or roll-back to. With no arguments, the update is to branch `main`, i.e. the latest release.
 
 #### Defaults:
 
