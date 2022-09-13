@@ -265,7 +265,7 @@ ipfs_config(){
       ipfs config --bool Swarm.DisableNatPortMap true
       ipfs config --bool Swarm.Transports.Network.Relay false
       # ipfs config --bool Swarm.DisableRelay true
-      ipfs config --bool Swarm.EnableAutoRelay false
+      ipfs config --bool Swarm.RelayClient.Enabled false
       ;;
     WAN | *)
       if [[ "${connect_mode}" == WAN ]]; then
@@ -285,7 +285,7 @@ ipfs_config(){
       ipfs config --bool Swarm.DisableNatPortMap false
       ipfs config --bool Swarm.Transports.Network.Relay true
       # ipfs config --bool Swarm.DisableRelay false
-      ipfs config --bool Swarm.EnableAutoRelay true
+      ipfs config --bool Swarm.RelayClient.Enabled true
       ;;
   esac
   rm -f "${IPFS_PATH}/config-pre-"* # Remove config backup files generated with `ipfs config profile apply`
