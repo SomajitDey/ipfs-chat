@@ -312,7 +312,7 @@ ipfs_config(){
   launch_ipfs(){
     # Brief: Launch IPFS daemon in the background, if not already running. Reflect online status through exit code
     ipfs swarm peers || \
-      [[ "$(flock -sF "${global_fs}" ipfs daemon ${@} | grep -iom1 'Daemon is ready' & tail -f --pid=$! /dev/null)" ]]
+      [[ "$(flock -s "${global_fs}" ipfs daemon ${@} | grep -iom1 'Daemon is ready' &)" ]]
   } &>/dev/null; export -f launch_ipfs
 
   if launch_ipfs --enable-pubsub-experiment --enable-namesys-pubsub ; then
