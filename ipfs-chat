@@ -2,7 +2,7 @@
 export LANGUAGE=C LANG=C LC_ALL=C
 # Details: See info and usage functions below
 
-export version="0.2.9 (beta)"
+export version="0.3.0 (beta)"
 
 info(){
   # Brief: Info about ipfs-chat
@@ -72,7 +72,7 @@ dep_check(){
   # Brief: Check major dependencies
   local ipfs_version quit
   if ipfs_version=$(ipfs version --number 2>/dev/null); then
-    local req_ipfs_ver=0.9.0 # Minimum ipfs-cli version required
+    local req_ipfs_ver=0.11.0 # Minimum ipfs-cli version required
     [[ "$(echo -e "${ipfs_version}\n${req_ipfs_ver}" | sort -t. -k1,1n -k2,2n -k3,3n | head -n1)" == "${req_ipfs_ver}" ]] || \
       { echo -e "Required: go-ipfs-cli version >= ${req_ipfs_ver}\nSuggestion: ipfs update install latest\n"; quit="yes";}
   else
@@ -226,6 +226,8 @@ ipfs_config(){
     (ipfs init --profile lowpower || ipfs config profile apply lowpower \
       && ipfs config profile apply randomports) &>/dev/null || \
       { echo "Error: Failed to create IPFS repo at ${IPFS_PATH}"; exit 1;}
+    ipfs config --json Pubsub.Enabled true
+    ipfs config --json Ipns.UsePubsub true
     ipfs config Pubsub.Router gossipsub
     ipfs config Ipns.RepublishPeriod 2m0s
     ipfs config Ipns.RecordLifetime 24h
@@ -233,7 +235,7 @@ ipfs_config(){
     ipfs config Reprovider.Strategy roots
     ipfs config Routing.Type dhtclient
     ipfs config Swarm.ConnMgr.Type none
-    ipfs config --bool Swarm.EnableRelayHop false
+    ipfs config --bool Swarm.RelayService.Enabled false
     ipfs config --json Experimental.FilestoreEnabled true
     ipfs config 'ipfs-chat-version' "${version}"
     ipfs config 'App' "ipfs-chat"
@@ -269,8 +271,8 @@ ipfs_config(){
       # Disable NAT traversal
       ipfs config --bool Swarm.DisableNatPortMap true
       ipfs config --bool Swarm.Transports.Network.Relay false
-      # ipfs config --bool Swarm.DisableRelay true
       ipfs config --bool Swarm.RelayClient.Enabled false
+      ipfs config --bool Swarm.EnableHolePunching false
       ;;
     WAN | *)
       if [[ "${connect_mode}" == WAN ]]; then
@@ -289,8 +291,8 @@ ipfs_config(){
       # For NAT traversal
       ipfs config --bool Swarm.DisableNatPortMap false
       ipfs config --bool Swarm.Transports.Network.Relay true
-      # ipfs config --bool Swarm.DisableRelay false
       ipfs config --bool Swarm.RelayClient.Enabled true
+      ipfs config --bool Swarm.EnableHolePunching true
       ;;
   esac
   rm -f "${IPFS_PATH}/config-pre-"* # Remove config backup files generated with `ipfs config profile apply`
@@ -315,7 +317,7 @@ ipfs_config(){
       [[ "$(flock -s "${global_fs}" ipfs daemon ${@} | grep -iom1 'Daemon is ready' &)" ]]
   } &>/dev/null; export -f launch_ipfs
 
-  if launch_ipfs --enable-pubsub-experiment --enable-namesys-pubsub ; then
+  if launch_ipfs ; then
     echo "$(tput cuu1; tput ed)Status: IPFS node is configured"
   else
     echo "Error: Failed to launch IPFS daemon"; exit 1
@@ -591,7 +593,7 @@ peering_daemon(){
 
     [[ -n "${dht_ops_pid}" ]] && wait "${dht_ops_pid[@]}" # Wait till all DHT operations are complete
     ipfs id "${selfID}" -f="<addrs>\n" | grep -vf <(ipfs diag sys | jq -r .net.interface_addresses[]) | \
-      xargs -n1 -r -0 ipfs pubsub pub "${broadcast}" # Announce own public multiaddresses over pubsub
+      ipfs pubsub pub "${broadcast}" # Announce own public multiaddresses over pubsub
     ipfs pin rm "${nonce}" &>/dev/null & # Otherwise reprovider will continue announcing stale nonce. Pin still necessary to save from auto-GC
     flock "${peers_buffer}" sort -uo "${peers_buffer}" "${peers_buffer}" && mv "${peers_buffer}" "${peers_ready}" # In-place sort followed by atomic move. -u defends against peers_buffer containing repetitions
     if ((EPOCHSECONDS-start_peer_discov > 30)); then
@@ -656,7 +658,7 @@ send(){
         all) gnupg --passphrase "${enc_key}" --pinentry-mode loopback -s -c --cipher-algo AES128;;
         *) peer_pubkey_nick "${recipID}" >/dev/null ; gnupg --keyring "${peer_kbx}" -s -r "${recipID}" -e;;
       esac | base64 -w0)"
-    ipfs pubsub pub "${topic}" "${selfID} ${buffer} ${recipID}"$'\n'
+    ipfs pubsub pub "${topic}" <<< "${selfID} ${buffer} ${recipID}"
   else
     prefix="Failed to send -- "
   fi
