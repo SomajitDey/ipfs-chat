@@ -235,7 +235,6 @@ ipfs_config(){
     ipfs config Reprovider.Strategy roots
     ipfs config Routing.Type dhtclient
     ipfs config Swarm.ConnMgr.Type none
-    ipfs config --bool Swarm.RelayService.Enabled false
     ipfs config --json Experimental.FilestoreEnabled true
     ipfs config 'ipfs-chat-version' "${version}"
     ipfs config 'App' "ipfs-chat"
@@ -295,6 +294,8 @@ ipfs_config(){
       ipfs config --bool Swarm.EnableHolePunching true
       ;;
   esac
+  # Disable RelayService. This config is given last as server profile in WAN mode turns it on
+  ipfs config --bool Swarm.RelayService.Enabled false
   rm -f "${IPFS_PATH}/config-pre-"* # Remove config backup files generated with `ipfs config profile apply`
 
   echo "$(tput cuu1; tput ed)Status: Configuring ports..."
